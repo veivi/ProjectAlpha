@@ -16,6 +16,32 @@
 #include <Wire.h>
 #endif
 
+float clamp(float value, float a, float b)
+{
+  if(a > b) {
+    // Swap limits
+    float t = a;
+    a = b;
+    b = t;
+  }
+
+  if(value > a && value < b)
+    return value;  
+  else if(value <= a)
+    return a;
+  else if(value >= b)
+    return b;
+
+  // All comparisons failed, must be NaN or some such
+  
+  return 0.0;
+}
+
+float mixValue(float mixRatio, float a, float b)
+{
+  return (1.0 - mixRatio)*a + mixRatio*b;
+}
+
 #define FORBID if(!nestCount++) cli()
 #define PERMIT if(!--nestCount) sei()
 
@@ -426,7 +452,7 @@ uint8_t I2C::wait(uint8_t address)
 
     if(timeOutDelay > 0 && millis() - startingTime > timeOutDelay)
     {
-      consolePrintLn("wait() timed out");
+      consoleNoteLn("wait() timed out");
       lockUp();
       return(1);
     }
@@ -1544,32 +1570,6 @@ void storeNVState(void)
   writeBlock((const char*) &stateRecord, stateOffset, sizeof(stateRecord));
 }
 
-float clamp(float value, float a, float b)
-{
-  if(a > b) {
-    // Swap limits
-    float t = a;
-    a = b;
-    b = t;
-  }
-
-  if(value > a && value < b)
-    return value;  
-  else if(value <= a)
-    return a;
-  else if(value >= b)
-    return b;
-
-  // All comparisons failed, must be NaN or some such
-  
-  return 0.0;
-}
-
-float mixValue(float mixRatio, float a, float b)
-{
-  return (1.0 - mixRatio)*a + mixRatio*b;
-}
-
 void readBlock(char *ptr, uint16_t addr, int size)
 {
   for(int i = 0; i < size; i++)
@@ -2041,11 +2041,11 @@ void logPrintValue(float v)
   if(av < 0.001) {
     col++;
     consolePrint(0);
-  } else if(abs(av - 1) < 0.001) {
+    } else if(abs(av - 1) < 0.001){
     consolePrint(v < 0.0 ? -1 : 1);
     col += v < 0.0 ? 2 : 1;
-  } else {
-    int decimals = av < 1 ? 3 : av < 10 ? 2 : av < 100 ? 1 : 0;
+    } else {
+      int decimals = av < 1 ? 3 : av < 10 ? 2 : av < 100 ? 1 : 0;
     consolePrint(v, decimals);
     col += 3 + (v < 0.0 ? 1 : 0) + (decimals > 0 ? 1 : 0) + (av < 1.0 ? 1 : 0)
       + (av >= 1000.0 ? 1 : 0) + (av >= 10000.0 ? 1 : 0);
@@ -2359,8 +2359,8 @@ boolean readPressure(int16_t *result)
   return true;
 }
 
-typedef enum { c_, c_adefl, c_edefl, c_clear, c_dump, c_min, c_max, c_zero, 
-              c_eneutral, c_aneutral, c_store, c_report, c_stop, c_cycle,
+typedef enum { c_, c_adefl, c_edefl, c_clear, c_dump, c_min, c_max, c_zero,
+c_eneutral, c_aneutral, c_store, c_report, c_stop, c_cycle,
            c_read, c_write, c_5048b_addr, c_5048b_read, c_start, c_init, c_filtlen,
             c_params, c_defaults, c_reset, c_24l256_addr, c_24l256_clk, c_5048b_clk, c_center,
            c_loop, c_stamp, c_model, c_alpha, c_flapneutral, c_flapstep, c_backup, c_echo,
@@ -4136,6 +4136,12 @@ void consolePrint(unsigned long v)
     Serial.print(v);
 }
 
+void consolePrint(uint8_t v)
+{
+  if(talk)
+    Serial.print(v);
+}
+
 void newline(void)
 {
   consolePrint("\n");
@@ -4178,6 +4184,12 @@ void consolePrintLn(int v)
 }
 
 void consolePrintLn(unsigned int v)
+{
+  consolePrint(v);
+  newline();
+}
+
+void consolePrintLn(uint8_t v)
 {
   consolePrint(v);
   newline();
