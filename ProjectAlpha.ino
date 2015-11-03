@@ -10,7 +10,7 @@
 #include "Sensors.h"
 #include "IMU.h"
 
-// #define MEGAMINI
+#define MEGAMINI
 
 #ifdef USE_FUCKING_CRAP_WIRE_I2C_LIBRARY
 #include <Wire.h>
