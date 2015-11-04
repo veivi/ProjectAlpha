@@ -219,14 +219,14 @@ void ppm_input_init() {
 #define RC_OUTPUT_MIN_PULSEWIDTH 400
 #define RC_OUTPUT_MAX_PULSEWIDTH 2100
 
+typedef enum { COMnA = 0, COMnB = 1, COMnC = 2 } PWM_Ch_t;
+
 struct HWTimer {
   volatile uint8_t *TCCRA, *TCCRB;
   volatile uint16_t *ICR;
   volatile uint16_t *OCR[3]; // 0... 2 = A ... C
   boolean initDone;
 };
-
-typedef enum { COMnA = 0, COMnB = 1, COMnC = 2, COMnInvalid } PWM_Ch_t;
 
 const uint8_t outputModeMask[3] = { 1<<COM1A1, 1<<COM1B1, 1<<COM1C1 };
 
@@ -278,11 +278,21 @@ void pwmTimerInit(struct HWTimer *timer)
    timer->initDone = true;
 }
 
+void pwmEnable(struct PWMOutput *output)
+{
+   *(output->timer->TCCRA) |= outputModeMask[output->pwmCh];
+}
+
+void pwmDisable(struct PWMOutput *output)
+{
+   *(output->timer->TCCRA) &= ~outputModeMask[output->pwmCh];
+}
+
 void pwmOutputInit(struct PWMOutput *output)
 {
    pwmTimerInit(output->timer);
    pinMode(output->pin, HAL_GPIO_OUTPUT);
-   *(output->timer->TCCRA) |= outputModeMask[output->pwmCh];
+   pwmEnable(output);
 }
 
 void servo_init(void)
