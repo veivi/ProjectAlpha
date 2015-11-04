@@ -116,25 +116,6 @@ struct RxInputRecord {
 
 #ifdef MEGAMINI
 
-#define CH_1 0
-#define CH_2 1
-#define CH_3 2
-#define CH_4 3
-#define CH_5 4
-#define CH_6 5
-#define CH_7 6
-#define CH_8 7
-#define CH_9 8
-#define CH_10 9
-#define CH_11 10
-#define CH_12 11
-#define CH_13 12
-#define CH_14 13
-#define CH_15 14
-#define CH_16 15
-#define CH_17 16
-#define CH_18 17
-
 struct RxInputRecord aileInput, elevInput, switchInput, modeInput;
 
 #define AVR_RC_INPUT_NUM_CHANNELS 8
@@ -312,9 +293,11 @@ void servo_init(void)
 
 /* constrain pwm to be between min and max pulsewidth. */
 uint16_t constrain_period(uint16_t p) {
-    if (p > RC_OUTPUT_MAX_PULSEWIDTH) return RC_OUTPUT_MAX_PULSEWIDTH;
-    if (p < RC_OUTPUT_MIN_PULSEWIDTH) return RC_OUTPUT_MIN_PULSEWIDTH;
-    return p;
+    if (p > RC_OUTPUT_MAX_PULSEWIDTH)
+       return RC_OUTPUT_MAX_PULSEWIDTH;
+    else if (p < RC_OUTPUT_MIN_PULSEWIDTH)
+       return RC_OUTPUT_MIN_PULSEWIDTH;
+    else return p;
 }
 
 void servo_write(uint8_t ch, uint16_t value)
