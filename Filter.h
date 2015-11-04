@@ -1,5 +1,7 @@
-#include <Arduino.h>
+#ifndef FILTER_H
+#define FILTER_H
 
+#include <Arduino.h>
 
 const int windowLenMax = 8;
 
@@ -41,3 +43,4 @@ private:
   int length;
 };
 
+#endif

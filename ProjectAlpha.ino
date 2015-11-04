@@ -11,12 +11,12 @@
 #include "IMU.h"
 #include "Filter.h"
 #include "Console.h"
+#include "Controller.h"
+#include "NewI2C.h"
 
-// #define MEGAMINI
+#define MEGAMINI
 
-#ifdef USE_FUCKING_CRAP_WIRE_I2C_LIBRARY
-#include <Wire.h>
-#endif
+NewI2C I2c = NewI2C();
 
 #define FORBID if(!nestCount++) cli()
 #define PERMIT if(!--nestCount) sei()
@@ -27,80 +27,6 @@ typedef enum { init_c, stop_c, run_c } logState_t;
 
 int32_t logPtr, logLen, logSize;
 uint16_t logEndStamp;
-
-class Controller {
-public:
-  void setPID(float P, float I, float D) {
-    Kp = P; 
-    Ki = I;
-    Kd = D;
-  }
-
-  float getP(void) { return Kp; }
-
-  float getI(void) { return Ki; }
-
-  float getD(void) { return Kd; }
-
-  void setZieglerNicholsPID(float Ku, float Tu) {
-    Kp = 0.6*Ku; 
-    Ki = 2.0*Kp/Tu; 
-    Kd = Kp*Tu/8.0;
-  }
-
-  void setZieglerNicholsPI(float Ku, float Tu) {
-    Kp = 0.45*Ku; 
-    Ki = 1.2*Kp/Tu; 
-    Kd = 0;
-  }
-
-  void getZieglerNicholsPID(float *Ku, float *Tu) {
-    if(Kd != 0.0) {
-      *Ku = Kp / 0.6; 
-      *Tu = Kd/Kp*8.0;
-    } else {
-      *Ku = Kp/0.45; 
-      *Tu = 1.2*Kp/Ki; 
-    }
-  }
-
-  void reset(float value, float err) {
-    prevErr = err;
-    I = value - Kp*err;
-  }
-
-  void input(float err, float d) {
-    if(d < 0.001) {
-      warn = true;
-      consolePrintLn("Controller delta less than 1 ms, iteration ignored");
-      return;
-    }
-    
-    errorFilter.input(err - prevErr);
-    prevErr = err;
-    delta = d;
-    // float range = 1.0 - Kp*err;
-    // I = clamp(I + Ki*err*delta, -range, range);
-    // I = clamp(I + Ki*err*delta, -1.0, 1.0);
-    
-    if(abs(Ki) > 0.1)
-      I = clamp(I + Ki*err*delta, -1.0 - Kp*err, 1.0 - Kp*err);
-    else
-      I = 0.0;
-  }
-
-  float output(void) {
-    float diffTerm = 0.0, diffLimit = 0.15;
-    if(Kd != 0.0)
-      diffTerm = clamp(Kd*errorFilter.output()/delta, -diffLimit, diffLimit);
-    return clamp(Kp*prevErr + I + diffTerm, -1, 1);
-  }
-
-  boolean warn;
-private:
-  float I, delta, prevErr, Kp, Ki, Kd;
-  Median3Filter errorFilter;
-};
 
 struct ModeRecord {
   boolean sensorFailSafe;
@@ -155,474 +81,26 @@ struct GPSFix {
 
 struct GPSFix gpsFix;
 
-#ifndef USE_FUCKING_CRAP_WIRE_I2C_LIBRARY
-
-#define START           0x08
-#define REPEATED_START  0x10
-#define MT_SLA_ACK	0x18
-#define MT_SLA_NACK	0x20
-#define MT_DATA_ACK     0x28
-#define MT_DATA_NACK    0x30
-#define MR_SLA_ACK	0x40
-#define MR_SLA_NACK	0x48
-#define MR_DATA_ACK     0x50
-#define MR_DATA_NACK    0x58
-#define LOST_ARBTRTN    0x38
-#define TWI_STATUS      (TWSR & 0xF8)
-#define SLA_W(address)  (address << 1)
-#define SLA_R(address)  ((address << 1) + 0x01)
-#define cbi(sfr, bit)   (_SFR_BYTE(sfr) &= ~_BV(bit))
-#define sbi(sfr, bit)   (_SFR_BYTE(sfr) |= _BV(bit))
-
-class I2C
-{
-  public:
-    void begin();
-    void end();
-    void timeOut(uint16_t);
-    void setSpeed(uint8_t); 
-    void pullup(uint8_t);
-    uint8_t wait(uint8_t);
-    uint8_t write(uint8_t, uint8_t, const uint8_t*, int);
-    uint8_t write(uint8_t, uint16_t, const uint8_t*, int);
-    uint8_t write(uint8_t, const uint8_t*, int, const uint8_t*, int);
-    uint8_t read(uint8_t, uint8_t, uint8_t*, int);
-    uint8_t read(uint8_t, uint16_t, uint8_t*, int);
-    uint8_t read(uint8_t, const uint8_t*, int, uint8_t*, int);
-
-
-  private:
-    uint8_t start();
-    uint8_t transmitByte(uint8_t);
-    uint8_t receiveByte(boolean);
-    uint8_t stop();
-    void lockUp();
-    uint8_t returnStatus;
-    uint8_t nack;
-    static uint16_t timeOutDelay;
-    
-    // Obsolete
-    
-    uint8_t transmitData(uint8_t);
-    uint8_t transmitAddress(uint8_t);    
-};
-
-uint16_t I2C::timeOutDelay = 0;
-
-
-
-////////////// Public Methods ////////////////////////////////////////
-
-
-
-void I2C::begin()
-{
-  #if defined(__AVR_ATmega168__) || defined(__AVR_ATmega8__) || defined(__AVR_ATmega328P__)
-    // activate internal pull-ups for twi
-    // as per note from atmega8 manual pg167
-    sbi(PORTC, 4);
-    sbi(PORTC, 5);
-  #else
-    // activate internal pull-ups for twi
-    // as per note from atmega128 manual pg204
-    sbi(PORTD, 0);
-    sbi(PORTD, 1);
-  #endif
-  // initialize twi prescaler and bit rate
-  cbi(TWSR, TWPS0);
-  cbi(TWSR, TWPS1);
-  TWBR = ((F_CPU / 100000) - 16) / 2;
-  // enable twi module and acks
-  TWCR = _BV(TWEN) | _BV(TWEA); 
-}
-
-void I2C::end()
-{
-  TWCR = 0;
-}
-
-void I2C::timeOut(uint16_t _timeOut)
-{
-  timeOutDelay = _timeOut;
-}
-
-void I2C::setSpeed(uint8_t _fast)
-{
-  if(!_fast)
-  {
-    TWBR = ((F_CPU / 100000) - 16) / 2;
-  }
-  else
-  {
-    TWBR = ((F_CPU / 400000) - 16) / 2;
-  }
-}
-  
-void I2C::pullup(uint8_t activate)
-{
-  if(activate)
-  {
-    #if defined(__AVR_ATmega168__) || defined(__AVR_ATmega8__) || defined(__AVR_ATmega328P__)
-      // activate internal pull-ups for twi
-      // as per note from atmega8 manual pg167
-      sbi(PORTC, 4);
-      sbi(PORTC, 5);
-    #else
-      // activate internal pull-ups for twi
-      // as per note from atmega128 manual pg204
-      sbi(PORTD, 0);
-      sbi(PORTD, 1);
-    #endif
-  }
-  else
-  {
-    #if defined(__AVR_ATmega168__) || defined(__AVR_ATmega8__) || defined(__AVR_ATmega328P__)
-      // deactivate internal pull-ups for twi
-      // as per note from atmega8 manual pg167
-      cbi(PORTC, 4);
-      cbi(PORTC, 5);
-    #else
-      // deactivate internal pull-ups for twi
-      // as per note from atmega128 manual pg204
-      cbi(PORTD, 0);
-      cbi(PORTD, 1);
-    #endif
-  }
-}
-  
-/*return values for new functions that use the timeOut feature 
-  will now return at what point in the transmission the timeout
-  occurred. Looking at a full communication sequence between a 
-  master and slave (transmit data and then readback data) there
-  a total of 7 points in the sequence where a timeout can occur.
-  These are listed below and correspond to the returned value:
-  1 - Waiting for successful completion of a Start bit
-  2 - Waiting for ACK/NACK while addressing slave in transmit mode (MT)
-  3 - Waiting for ACK/NACK while sending data to the slave
-  4 - Waiting for successful completion of a Repeated Start
-  5 - Waiting for ACK/NACK while addressing slave in receiver mode (MR)
-  6 - Waiting for ACK/NACK while receiving data from the slave
-  7 - Waiting for successful completion of the Stop bit
-
-  All possible return values:
-  0           Function executed with no errors
-  1 - 7       Timeout occurred, see above list
-  8 - 0xFF    See datasheet for exact meaning */ 
-
-
-/////////////////////////////////////////////////////
-
-uint8_t I2C::wait(uint8_t address)
-{
-  unsigned long startingTime = millis();
-  
-  while(1) {
-    returnStatus = 0;
-    returnStatus = start();
-    if(returnStatus){return(returnStatus);}
-    returnStatus = transmitByte(SLA_W(address));
-
-    if(!returnStatus) {
-      returnStatus = stop();
-      if(returnStatus == 1)
-        return 7;
-      return(returnStatus);
-    } else if(returnStatus != MT_SLA_NACK) {
-      consoleNote("wait() transmitAddress returned ");
-      consolePrintLn(returnStatus);
-        if(returnStatus == 1){return(2);}
-        return(returnStatus);
-    }
-
-    if(timeOutDelay > 0 && millis() - startingTime > timeOutDelay)
-    {
-      consoleNoteLn("wait() timed out");
-      lockUp();
-      return(1);
-    }
-  }
-}
-
-uint8_t I2C::write(uint8_t address, uint8_t registerAddress, const uint8_t *data, int numberBytes)
-{
-  return write(address, &registerAddress, sizeof(registerAddress), data, numberBytes);
-}
-
-uint8_t I2C::write(uint8_t address, uint16_t memAddress, const uint8_t *data, int numberBytes)
-{
-  uint8_t addrArray[sizeof(memAddress)];
-  
-  for(int i = 0; i < sizeof(memAddress); i++)
-    addrArray[i] = (memAddress >> 8*(sizeof(memAddress) - i - 1)) & 0xFF;
-    
-  return write(address, addrArray, sizeof(addrArray), data, numberBytes);
-}
-
-uint8_t I2C::write(uint8_t address, const uint8_t *addrArray, int addrSize, const uint8_t *data, int numberBytes)
-{
-  returnStatus = start();
-  if(returnStatus){return(returnStatus);}
-
-  returnStatus = transmitByte(SLA_W(address));
-  if(returnStatus)
-  {
-    if(returnStatus == 1){return(2);}
-    return(returnStatus);
-  }
-
-  for(int i = 0; i < addrSize; i++) {
-    returnStatus = transmitByte(addrArray[i]);
-    if(returnStatus)
-    {
-      if(returnStatus == 1){return(3);}
-      return(returnStatus);
-    }
-  }
-
-  for (int i = 0; i < numberBytes; i++)
-  {
-    returnStatus = transmitByte(data[i]);
-    if(returnStatus)
-      {
-        if(returnStatus == 1){return(3);}
-        return(returnStatus);
-      }
-  }
-
-  returnStatus = stop();
-
-  if(returnStatus == 1)
-    return 7;
-    
-  return returnStatus;
-}
-
-uint8_t I2C::read(uint8_t address, uint8_t registerAddress, uint8_t *dataBuffer, int numberBytes)
-{
-  return read(address, &registerAddress, sizeof(registerAddress), dataBuffer, numberBytes);
-}
-
-uint8_t I2C::read(uint8_t address, uint16_t memAddress, uint8_t *dataBuffer, int numberBytes)
-{
-  uint8_t addrArray[sizeof(memAddress)];
-  
-  for(int i = 0; i < sizeof(memAddress); i++)
-    addrArray[i] = (memAddress >> 8*(sizeof(memAddress) - i - 1)) & 0xFF;
-    
-  return read(address, addrArray, sizeof(addrArray), dataBuffer, numberBytes);
-}
-
-uint8_t I2C::read(uint8_t address, const uint8_t *addrArray, int addrSize, uint8_t *dataBuffer, int numberBytes)
-{
-  if(numberBytes < 1)
-    return 0;
-
-  if(addrSize > 0) {
-    returnStatus = start();
-    if(returnStatus){return(returnStatus);}
-
-    returnStatus = transmitByte(SLA_W(address));
-    if(returnStatus)
-    {
-      if(returnStatus == 1){return(2);}
-      return(returnStatus);
-    }
-
-    for(int i = 0; i < addrSize; i++) {
-      returnStatus = transmitByte(addrArray[i]);
-      if(returnStatus)
-      {
-        if(returnStatus == 1){return(3);}
-        return(returnStatus);
-      }
-    }
-  }
-  
-  returnStatus = start();
-  if(returnStatus)
-  {
-    if(returnStatus == 1){return(4);}
-    return(returnStatus);
-  }
-  
-  returnStatus = transmitByte(SLA_R(address));
-  if(returnStatus)
-  {
-    if(returnStatus == 1){return(5);}
-    return(returnStatus);
-  }
-  
-  for(int i = 0; i < numberBytes; i++)
-  {
-    returnStatus = receiveByte(i < (numberBytes - 1));
-    
-    if(returnStatus == 1)
-      return 6;
-      
-    if(returnStatus != (i < (numberBytes - 1) ? MR_DATA_ACK : MR_DATA_NACK))
-      return returnStatus;
-
-    dataBuffer[i] = TWDR;
-  }
-
-  returnStatus = stop();
-  
-  if(returnStatus == 1)
-    return 7;
-
-  return returnStatus;
-}
-
-/////////////// Private Methods ////////////////////////////////////////
-
-
-uint8_t I2C::start()
-{
-  unsigned long startingTime = millis();
-  TWCR = (1<<TWINT)|(1<<TWSTA)|(1<<TWEN);
-  while (!(TWCR & (1<<TWINT)))
-  {
-    if(timeOutDelay > 0 && millis() - startingTime > timeOutDelay)
-    {
-      lockUp();
-      return(1);
-    }
-       
-  }
-  if ((TWI_STATUS == START) || (TWI_STATUS == REPEATED_START))
-  {
-    return(0);
-  }
-  uint8_t bufferedStatus = TWI_STATUS;
-  if (bufferedStatus == LOST_ARBTRTN)
-  {
-    lockUp();
-    return(bufferedStatus);
-  }
-  return(TWI_STATUS);
-}
-
-uint8_t I2C::transmitByte(uint8_t contents)
-{
-  TWDR = contents;
-  unsigned long startingTime = millis();
-  TWCR = (1<<TWINT) | (1<<TWEN);
-  while (!(TWCR & (1<<TWINT)))
-  {
-    if(timeOutDelay > 0 && millis() - startingTime > timeOutDelay)
-    {
-      lockUp();
-      return(1);
-    }
-       
-  }
-  if ((TWI_STATUS == MT_SLA_ACK) || (TWI_STATUS == MR_SLA_ACK) || (TWI_STATUS == MT_DATA_ACK))
-  {
-    return(0);
-  }
-  uint8_t bufferedStatus = TWI_STATUS;
-  if ((bufferedStatus == MT_SLA_NACK) || (bufferedStatus == MR_SLA_NACK) || (bufferedStatus == MT_DATA_NACK))
-  {
-      stop();
-      return(bufferedStatus);
-  }
-  else
-  {
-    lockUp();
-    return(bufferedStatus);
-  }
-}
-
-uint8_t I2C::transmitAddress(uint8_t i2cAddress)
-{
-  return transmitByte(i2cAddress);
-}
-
-uint8_t I2C::transmitData(uint8_t i2cData)
-{
-  return transmitByte(i2cData);
-}
-
-uint8_t I2C::receiveByte(boolean ack)
-{
-  unsigned long startingTime = millis();
-  if(ack)
-  {
-    TWCR = (1<<TWINT) | (1<<TWEN) | (1<<TWEA);
-
-  }
-  else
-  {
-    TWCR = (1<<TWINT) | (1<<TWEN);
-  }
-  while (!(TWCR & (1<<TWINT)))
-  {
-    if(timeOutDelay > 0 && millis() - startingTime > timeOutDelay)
-    {
-      lockUp();
-      return(1);
-    }
-  }
-  uint8_t bufferedStatus = TWI_STATUS;
-  if (bufferedStatus == LOST_ARBTRTN)
-  {
-    lockUp();
-    return(bufferedStatus);
-  }
-  return(TWI_STATUS); 
-}
-
-uint8_t I2C::stop()
-{
-  unsigned long startingTime = millis();
-  TWCR = (1<<TWINT)|(1<<TWEN)| (1<<TWSTO);
-  while ((TWCR & (1<<TWSTO)))
-  {
-    if(timeOutDelay > 0 && millis() - startingTime > timeOutDelay)
-    {
-      lockUp();
-      return(1);
-    }
-       
-  }
-  return(0);
-}
-
-void I2C::lockUp()
-{
-  TWCR = 0; //releases SDA and SCL lines to high impedance
-  TWCR = _BV(TWEN) | _BV(TWEA); //reinitialize TWI 
-}
-
-I2C I2c = I2C();
-
-#endif
-
 #define BAUDRATE 115200
-#define CONTROL_HZ 150
-#define ALPHA_HZ (CONTROL_HZ*4)
-#define ACTUATOR_HZ CONTROL_HZ
-#define TRIM_HZ 10
-#define LED_HZ 3
-#define LED_TICK 100
 
 #define EXT_EEPROM_SIZE (1L<<17)
 #define EXT_EEPROM_PAGE (1L<<7)
 #define EXT_EEPROM_LATENCY 5000
+#define PAGE_MASK ~(EXT_EEPROM_PAGE-1)
 
 #define INT_EEPROM_SIZE (1<<12)
 
-#define I2C_MAX_BURST 30
-#define I2C_MAX_BURST_READ 32
-
-#define PAGE_MASK ~(EXT_EEPROM_PAGE-1)
-
 #define buttonPin 35
+
 #define aileServoPin  12
 #define elevatorServoPin  11
 #define flapServoPin  8
 #define gearServoPin  7
 #define brakeServoPin  7
+
+#ifdef MEGAMINI
+#define ppmInputPin 48
+#endif
 
 // Pin change stuff
 
@@ -660,7 +138,7 @@ struct RxInputRecord {
 struct RxInputRecord aileInput, elevInput, switchInput, modeInput;
 
 #define AVR_RC_INPUT_NUM_CHANNELS 8
-#define AVR_RC_INPUT_MIN_CHANNELS 8     // for ppm sum we allow less than 8 channels to make up a valid packet
+#define AVR_RC_INPUT_MIN_CHANNELS 8
 
 /*
   mininum pulse width in microseconds to signal end of a PPM-SUM
@@ -760,13 +238,86 @@ void ppm_input_init() {
 #define RC_OUTPUT_MIN_PULSEWIDTH 400
 #define RC_OUTPUT_MAX_PULSEWIDTH 2100
 
+struct HWTimer {
+  volatile uint8_t *TCCRA, *TCCRB;
+  volatile uint16_t *ICR;
+  volatile uint16_t *OCR[3]; // 0... 2 = A ... C
+  boolean initDone;
+};
+
+typedef enum { COMnA = 0, COMnB = 1, COMnC = 2, COMnInvalid } PWM_Ch_t;
+
+const uint8_t outputModeMask[3] = { 1<<COM1A1, 1<<COM1B1, 1<<COM1C1 };
+
+struct PWMOutput {
+  int pin;
+  struct HWTimer *timer;
+  PWM_Ch_t pwmCh; // COMnA / COMnB / COMnC
+};
+
+struct HWTimer hwTimer1 = { &TCCR1A, &TCCR1B, &ICR1, { &OCR1A, &OCR1B, &OCR1C } };
+struct HWTimer hwTimer3 = { &TCCR3A, &TCCR3B, &ICR3, { &OCR3A, &OCR3B, &OCR3C } };
+struct HWTimer hwTimer4 = { &TCCR4A, &TCCR4B, &ICR4, { &OCR4A, &OCR4B, &OCR4C } };
+
+struct PWMOutput pwmOutput[] = {
+       { 12, &hwTimer1, COMnB },
+       { 11, &hwTimer1, COMnA },
+       { 8, &hwTimer4, COMnC },
+       { 7, &hwTimer4, COMnB },
+       { 6, &hwTimer4, COMnA },
+       { 3, &hwTimer3, COMnC },
+       { 2, &hwTimer3, COMnB },
+       { 5, &hwTimer3, COMnA } };
+
+#define PWM_HZ 50
+#define TIMER_HZ (16e6/8)
+
+void pwmTimerInit(struct HWTimer *timer)
+{
+   if(timer->initDone)
+      return;
+      
+   // WGM, prescaling
+   
+   *(timer->TCCRA) = 1<<WGM11;
+   *(timer->TCCRB) = (1<<WGM13) | (1<<WGM12) | (1<<CS11);
+
+   // PWM frequency
+   
+   *(timer->ICR) = TIMER_HZ/PWM_HZ - 1;
+
+   // Output set to nil by default
+
+   for(int i = 0; i < 3; i++)
+      *(timer->OCR[i]) = 0xFFFF;
+
+   timer->initDone = true;
+}
+
+void pwmOutputInit(struct PWMOutput *output)
+{
+   pwmTimerInit(output->timer);
+   pinMode(output->pin, HAL_GPIO_OUTPUT);
+   *(output->timer->TCCRA) |= outputModeMask[output->pwmCh];
+}
+
+void servo_init_new(void)
+{
+   for(int i = 0; i < sizeof(pwmOutput)/sizeof(struct PWMOutput); i++)
+      pwmOutputInit(&pwmOutput[i]);
+}
+
+void servo_write_new(uint8_t ch, uint16_t value)
+{
+   *(pwmOutput[ch].timer->OCR[pwmOutput[ch].pwmCh])
+      = constrain_period(value) << 1;
+}
 
 void servo_init(void) {
     // --------------------- TIMER1: CH_1 and CH_2 -----------------------
     pinMode(12,HAL_GPIO_OUTPUT); // CH_1 (PB6/OC1B)
     pinMode(11,HAL_GPIO_OUTPUT); // CH_2 (PB5/OC1A)
 
-    PORTB = 1<<6;
     // WGM: 1 1 1 0. Clear Timer on Compare, TOP is ICR1.
     // CS11: prescale by 8 => 0.5us tick
     TCCR1A =(1<<COM1B1) | (1<<COM1A1) | ((1<<WGM11));
@@ -838,12 +389,6 @@ uint16_t servo_get_freq(uint8_t ch) {
         case CH_8:
             icr = ICR3;
             break;
-        /* CH_10 and CH_11 share TIMER5 with input capture.
-         * The period is specified in OCR5A rater than the ICR. */
-        case CH_10:
-        case CH_11:
-            icr = OCR5A;
-            break;
         default:
             return 0;
     }
@@ -864,8 +409,6 @@ void servo_enable_ch(uint8_t ch) {
     case 5: TCCR3A |= (1<<COM3C1); break; // CH_6 : OC3C
     case 6: TCCR3A |= (1<<COM3B1); break; // CH_7 : OC3B
     case 7: TCCR3A |= (1<<COM3A1); break; // CH_8 : OC3A
-    case 9: TCCR5A |= (1<<COM5B1); break; // CH_10 : OC5B
-    case 10: TCCR5A |= (1<<COM5C1); break; // CH_11 : OC5C
     }
 }
 
@@ -879,8 +422,6 @@ void servo_disable_ch(uint8_t ch) {
     case 5: TCCR3A &= ~(1<<COM3C1); break; // CH_6 : OC3C
     case 6: TCCR3A &= ~(1<<COM3B1); break; // CH_7 : OC3B
     case 7: TCCR3A &= ~(1<<COM3A1); break; // CH_8 : OC3A
-    case 9: TCCR5A &= ~(1<<COM5B1); break; // CH_10 : OC5B
-    case 10: TCCR5A &= ~(1<<COM5C1); break; // CH_11 : OC5C
     }
 }
 
@@ -960,6 +501,7 @@ struct RxInputRecord aileInput = { aileRxPin, 0 };
 struct RxInputRecord elevInput = { elevatorRxPin, 1 };
 struct RxInputRecord switchInput = { switchPin, 3 };
 struct RxInputRecord modeInput = { tuningKnobPin, 5 };
+
 #endif
 
 struct RxInputRecord rpmInput = { rpmPin, 6, false, true };
@@ -1031,7 +573,7 @@ float inputValue(struct RxInputRecord *record)
   return (float) acc / count;
 }
 
-void consolePrintParams(struct ParamRecord *p)
+void printParams(struct ParamRecord *p)
 {
   consoleNote("  24L256 addr = ");
   consolePrint(p->i2c_24L256);
@@ -1194,17 +736,12 @@ void waitEEPROM(uint32_t addr)
     // We're cool
     return;
     
-// Write latency not met, wait for acknowledge
+  // Write latency not met, wait for acknowledge
 
-#ifdef USE_FUCKING_CRAP_WIRE_I2C_LIBRARY
-  do {
-    Wire.beginTransmission((uint8_t) paramRecord[stateRecord.model].i2c_24L256 + (uint8_t) ((addr>>16) & 0x7));
-  } while(Wire.endTransmission() != 0);
-#else
-  handleFailure("EEPROM wait", 
-                  I2c.wait((uint8_t) (paramRecord[stateRecord.model].i2c_24L256 + (uint8_t) ((addr>>16) & 0x7))) != 0, 
-                  &eepromWarn, &eepromFailed, &eepromFailCount);
-#endif
+  handleFailure("EEPROM wait",
+     I2c.wait((uint8_t) (paramRecord[stateRecord.model].i2c_24L256
+     			+ (uint8_t) ((addr>>16) & 0x7))) != 0, 
+                  	&eepromWarn, &eepromFailed, &eepromFailCount);
 }
 
 void writeEEPROM(uint32_t addr, const uint8_t *data, int bytes) 
@@ -1212,35 +749,12 @@ void writeEEPROM(uint32_t addr, const uint8_t *data, int bytes)
   if(eepromFailed)
     return;
     
-#ifdef USE_FUCKING_CRAP_WIRE_I2C_LIBRARY
-  while(bytes > 0) {
-    int burst = min(I2C_MAX_BURST, bytes);
-
-    waitEEPROM(addr);
-
-    Wire.beginTransmission((uint8_t) paramRecord[stateRecord.model].i2c_24L256 + (uint8_t) ((addr>>16) & 0x7));
-    Wire.write((uint8_t)((addr >> 8) & 0xFF));   // MSB
-    Wire.write((uint8_t)(addr & 0xFF)); // LSB
-    
-    for(int i = 0; i < burst; i++)
-      Wire.write(data[i]);
-  
-    Wire.endTransmission(true);
-    
-    lastWriteTime = micros();  
-  
-    addr += burst;
-    data += burst;
-    bytes -= burst;
-  }
-#else
   waitEEPROM(addr);
   boolean fail = I2c.write(  (uint8_t) paramRecord[stateRecord.model].i2c_24L256 + (uint8_t) ((addr>>16) & 0x7), 
                              (uint16_t) (addr & 0xFFFFL), 
                              data, bytes) != 0;
   handleFailure("EEPROM write", fail, &eepromWarn, &eepromFailed, &eepromFailCount);
   lastWriteTime = micros();
-#endif
 }
  
 boolean readEEPROM(uint32_t addr, uint8_t *data, int size) 
@@ -1250,32 +764,10 @@ boolean readEEPROM(uint32_t addr, uint8_t *data, int size)
     
   waitEEPROM(addr);
 
-#ifdef USE_FUCKING_CRAP_WIRE_I2C_LIBRARY
-  Wire.beginTransmission((uint8_t) paramRecord[stateRecord.model].i2c_24L256 + (uint8_t) ((addr>>16) & 0x7));
-  Wire.write((int)((addr >> 8) & 0xFF));   // MSB
-  Wire.write((int)(addr & 0xFF)); // LSB 
-  Wire.endTransmission();
-
-  int count = 0;
-
-  while(count < size) {
-    int burst = min(size - count, I2C_MAX_BURST_READ);
-   
-    Wire.requestFrom((uint8_t) paramRecord[stateRecord.model].i2c_24L256 + (uint8_t) ((addr>>16) & 0x7), burst);
-    
-    burst = Wire.available();
-  
-    for(int i = 0; i < burst; i++)
-      data[count+i] = Wire.read();
-      
-    count += burst;
-  }
-  
-  return false;
-#else
   boolean fail = I2c.read((uint8_t) paramRecord[stateRecord.model].i2c_24L256 + (uint8_t) ((addr>>16) & 0x7), (uint16_t) (addr & 0xFFFFL), data, size) != 0;
+  
   return handleFailure("EEPROM read", fail, &eepromWarn, &eepromFailed, &eepromFailCount);
-#endif    
+
 }
 
 uint8_t cacheData[EXT_EEPROM_PAGE];
@@ -2099,7 +1591,7 @@ void setup() {
       paramRecord[i] = paramDefaults;
     }
     
-    consolePrintParams(&paramRecord[i]);    
+    printParams(&paramRecord[i]);    
   }
 
   // Set I2C speed
@@ -2152,7 +1644,7 @@ void setup() {
   consoleNoteLn("Initializing servos");
 
 #ifdef MEGAMINI
-  servo_init();
+  servo_init_new();
 #else
   aileServo.attach(aileServoPin);
   elevatorServo.attach(elevatorServoPin);
@@ -2854,14 +2346,14 @@ void executeCommand(const char *cmdBuf, int cmdBufLen)
    case c_defaults:
       paramRecord[stateRecord.model] = paramDefaults;
       consoleNoteLn("Defaults restored");
-      consolePrintParams(&paramDefaults);
+      printParams(&paramDefaults);
       break;
       
    case c_params:
       consoleNote("SETTINGS (MODEL ");
       consolePrint(stateRecord.model);
       consolePrintLn(")");
-      consolePrintParams(&paramRecord[stateRecord.model]);
+      printParams(&paramRecord[stateRecord.model]);
       break;
   
   case c_5048b_clk:
@@ -2919,6 +2411,13 @@ void executeCommandSeries(const char *buffer, int len)
 }
 
 void annexCode() {} 
+
+#define CONTROL_HZ 150
+#define ALPHA_HZ (CONTROL_HZ*4)
+#define ACTUATOR_HZ CONTROL_HZ
+#define TRIM_HZ 10
+#define LED_HZ 3
+#define LED_TICK 100
 
 struct Task {
   float period;
@@ -3791,12 +3290,19 @@ void actuatorTask(float currentTime)
  
   if(armed) {
 #ifdef MEGAMINI
-    servo_write(0, 1500 + 500*clamp(paramRecord[stateRecord.model].aileDefl*aileOutput 
+    servo_write_new(0, 1500 + 500*clamp(paramRecord[stateRecord.model].aileDefl*aileOutput 
       + paramRecord[stateRecord.model].aileNeutral, -1, 1));
 
-    servo_write(1, 1500 + 500*clamp(paramRecord[stateRecord.model].elevDefl*elevOutput 
+    servo_write_new(1, 1500 + 500*clamp(paramRecord[stateRecord.model].elevDefl*elevOutput 
       + paramRecord[stateRecord.model].elevNeutral, -1, 1));
                               
+    servo_write_new(2, 1500 + 500*(clamp(paramRecord[stateRecord.model].flapNeutral 
+                        + flapOutput*paramRecord[stateRecord.model].flapStep, -1, 1)));                              
+
+    servo_write_new(3, 1500 - 500*(gearOutput*2-1));
+
+    servo_write_new(4, 1500 + 500*clamp(paramRecord[stateRecord.model].brakeNeutral + 
+                                paramRecord[stateRecord.model].brakeDefl*brakeOutput, -1, 1));
 #else      
     aileServo.writeMicroseconds(1500 + 500*clamp(paramRecord[stateRecord.model].aileDefl*aileOutput 
       + paramRecord[stateRecord.model].aileNeutral, -1, 1));
