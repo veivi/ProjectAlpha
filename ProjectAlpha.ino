@@ -9,38 +9,14 @@
 #include "MultiWii.h"
 #include "Sensors.h"
 #include "IMU.h"
+#include "Filter.h"
+#include "Console.h"
 
-#define MEGAMINI
+// #define MEGAMINI
 
 #ifdef USE_FUCKING_CRAP_WIRE_I2C_LIBRARY
 #include <Wire.h>
 #endif
-
-float clamp(float value, float a, float b)
-{
-  if(a > b) {
-    // Swap limits
-    float t = a;
-    a = b;
-    b = t;
-  }
-
-  if(value > a && value < b)
-    return value;  
-  else if(value <= a)
-    return a;
-  else if(value >= b)
-    return b;
-
-  // All comparisons failed, must be NaN or some such
-  
-  return 0.0;
-}
-
-float mixValue(float mixRatio, float a, float b)
-{
-  return (1.0 - mixRatio)*a + mixRatio*b;
-}
 
 #define FORBID if(!nestCount++) cli()
 #define PERMIT if(!--nestCount) sei()
@@ -51,98 +27,6 @@ typedef enum { init_c, stop_c, run_c } logState_t;
 
 int32_t logPtr, logLen, logSize;
 uint16_t logEndStamp;
-
-const int windowLenMax = 8;
-
-class RunningAvgFilter {
-  public:
-    void setWindowLen(int l);
-    float input(float v);
-    float output();
-    
-  private:
-    float memory[windowLenMax], sum;
-    int windowLen;
-    int ptr;
-};
-
-const int MedianWindow_c = 3;
-  
-class Median3Filter {  
-  public:
-    void input(float v);
-    float output();
-    
-  private:
-    float memory[MedianWindow_c];
-    int ptr;
-};
-
-void Median3Filter::input(float v)
-{
-  memory[ptr++] = v;
-  if(ptr > MedianWindow_c-1) ptr = 0;
-}
-
-float Median3Filter::output(void)
-{
-  return max(min(memory[0],memory[1]), min(max(memory[0],memory[1]),memory[2]));
-}
-
-void RunningAvgFilter::setWindowLen(int a) 
-{
-  if(a < 1 || a > windowLenMax)
-     a = windowLenMax;
-
-   sum = 0.0;
-   windowLen = a;
-
-   for(int i = 0; i < windowLen; i++)
-     memory[i] = 0.0;
-}
-
-float RunningAvgFilter::output() 
-{ 
-  return (float) sum / windowLen;
-}
-
-float RunningAvgFilter::input(float v) 
-{ 
-    ptr = (ptr + 1) % windowLen;
-
-    sum -= memory[ptr];
-    sum += memory[ptr] = v;
-    
-    return output();
-}
-
-class AlphaBuffer {
-public:
-  float output(void);
-  void input(float v);
-  boolean warn;
-  
-private:
-  float sum, value;
-  int length;
-};
-
-float AlphaBuffer::output(void) { 
-  if(length > 0) {
-    value = sum / length;
-    sum = 0.0;
-    length = 0;
-  } else if(!warn) {
-    consolePrintLn("Alpha/IAS buffer starved");
-    warn = true;
-  }  
-  return value;
-}
-
-void AlphaBuffer::input(float v) { 
-  length++;
-  sum += v;
-}
 
 class Controller {
 public:
@@ -1548,6 +1432,18 @@ float decodePWM(float pulse) {
   return (pulse - 1500)/500.0/txRange;
 }
 
+void readBlock(char *ptr, uint16_t addr, int size)
+{
+  for(int i = 0; i < size; i++)
+    ptr[i] = EEPROM.read(addr+i);
+}
+
+void writeBlock(const char *ptr, uint16_t addr, int size)
+{
+  for(int i = 0; i < size; i++)
+    EEPROM.write(addr+i, ptr[i]);
+}
+
 void readParams(void)
 {
   readBlock((char*) paramRecord, paramOffset, sizeof(paramRecord));
@@ -1568,18 +1464,6 @@ void storeNVState(void)
 {
   stateRecord.crc = stateRecordCrc(&stateRecord);
   writeBlock((const char*) &stateRecord, stateOffset, sizeof(stateRecord));
-}
-
-void readBlock(char *ptr, uint16_t addr, int size)
-{
-  for(int i = 0; i < size; i++)
-    ptr[i] = EEPROM.read(addr+i);
-}
-
-void writeBlock(const char *ptr, uint16_t addr, int size)
-{
-  for(int i = 0; i < size; i++)
-    EEPROM.write(addr+i, ptr[i]);
 }
 
 void logWrite(int32_t index, const uint16_t *value, int count)
@@ -1855,8 +1739,60 @@ void logMark(void)
   logEnter(uint16_tOKEN(t_mark));
 }
 
+
+void logEnable()
+{
+  if(logEnabled)
+    return;
+    
+  logEnabled = true;
+  
+  for(int i = 0; i < l_channels; i++)
+    logChannels[i].value = TOKEN_MASK;
+  
+  prevCh = -1;  
+  
+  consoleNoteLn("Logging ENABLED");
+}
+
+void logDisable()
+{
+  if(!logEnabled)
+    return;
+    
+  logMark();
+  logEnabled = false;
+  
+  consoleNoteLn("Logging DISABLED");
+}
+
 int col;
   
+void logPrintValue(float v)
+{
+  float av = abs(v);
+  
+  if(col > 72) {
+    consolePrintLn("");
+    col = 0;
+  }
+  
+  if(av < 0.001) {
+    col++;
+    consolePrint(0);
+    } else if(abs(av - 1) < 0.001){
+    consolePrint(v < 0.0 ? -1 : 1);
+    col += v < 0.0 ? 2 : 1;
+    } else {
+      int decimals = av < 1 ? 3 : av < 10 ? 2 : av < 100 ? 1 : 0;
+    consolePrint(v, decimals);
+    col += 3 + (v < 0.0 ? 1 : 0) + (decimals > 0 ? 1 : 0) + (av < 1.0 ? 1 : 0)
+      + (av >= 1000.0 ? 1 : 0) + (av >= 10000.0 ? 1 : 0);
+  }
+  
+  col++; // account for the comma
+}
+
 void logDump(int ch)
 {
   if(logState == init_c) {
@@ -2027,31 +1963,6 @@ void logDump(int ch)
   }
 
   consolePrintLn(" ]");
-}
-
-void logPrintValue(float v)
-{
-  float av = abs(v);
-  
-  if(col > 72) {
-    consolePrintLn("");
-    col = 0;
-  }
-  
-  if(av < 0.001) {
-    col++;
-    consolePrint(0);
-    } else if(abs(av - 1) < 0.001){
-    consolePrint(v < 0.0 ? -1 : 1);
-    col += v < 0.0 ? 2 : 1;
-    } else {
-      int decimals = av < 1 ? 3 : av < 10 ? 2 : av < 100 ? 1 : 0;
-    consolePrint(v, decimals);
-    col += 3 + (v < 0.0 ? 1 : 0) + (decimals > 0 ? 1 : 0) + (av < 1.0 ? 1 : 0)
-      + (av >= 1000.0 ? 1 : 0) + (av >= 10000.0 ? 1 : 0);
-  }
-  
-  col++; // account for the comma
 }
 
 #define WORD6_CHAR(v, s)  (' ' + (((v)>>(s*6)) & 0x3F))
@@ -2234,7 +2145,7 @@ void setup() {
 
   // RPM sensor int control
   
-  rpmMeasure(stateRecord.logRPM);
+  // rpmMeasure(stateRecord.logRPM);
   
   // Servos
 
@@ -2456,29 +2367,6 @@ int indexOf(const char *s, const char c)
   return indexOf(s, c, 0);
 }
     
-void executeCommandSeries(const char *buffer, int len)
-{
-  int index = 0;
-    
-  while(index < len) {
-    cmdBufLen = 0;
-    
-    while(index < len && buffer[index] != ';') {
-      if(cmdBufLen < maxCmdLen-1 && (buffer[index] != ' ' || cmdBufLen > 0)) {
-        cmdBuf[cmdBufLen++] = buffer[index];
-      }
-      index++;
-    }
-        
-    cmdBuf[cmdBufLen] = '\0';
-    
-    if(cmdBufLen > 0)
-      executeCommand(cmdBuf, cmdBufLen);
-
-    index++;    
-  }
-}
-
 void executeCommand(const char *cmdBuf, int cmdBufLen)
 {
   if(echoEnabled) {
@@ -3007,6 +2895,29 @@ void executeCommand(const char *cmdBuf, int cmdBufLen)
   }
 }
 
+void executeCommandSeries(const char *buffer, int len)
+{
+  int index = 0;
+    
+  while(index < len) {
+    cmdBufLen = 0;
+    
+    while(index < len && buffer[index] != ';') {
+      if(cmdBufLen < maxCmdLen-1 && (buffer[index] != ' ' || cmdBufLen > 0)) {
+        cmdBuf[cmdBufLen++] = buffer[index];
+      }
+      index++;
+    }
+        
+    cmdBuf[cmdBufLen] = '\0';
+    
+    if(cmdBufLen > 0)
+      executeCommand(cmdBuf, cmdBufLen);
+
+    index++;    
+  }
+}
+
 void annexCode() {} 
 
 struct Task {
@@ -3177,32 +3088,6 @@ void positionLogTask(float currentTime)
   logPosition();
 }
 
-void logEnable()
-{
-  if(logEnabled)
-    return;
-    
-  logEnabled = true;
-  
-  for(int i = 0; i < l_channels; i++)
-    logChannels[i].value = TOKEN_MASK;
-  
-  prevCh = -1;  
-  
-  consoleNoteLn("Logging ENABLED");
-}
-
-void logDisable()
-{
-  if(!logEnabled)
-    return;
-    
-  logMark();
-  logEnabled = false;
-  
-  consoleNoteLn("Logging DISABLED");
-}
-
 void cycleTimeMonitor(float value)
 {
 //  consolePrint("ct = ");
@@ -3273,6 +3158,16 @@ void measurementTask(float currentTime)
     cycleTimeFilter.input(controlCycle);    
     cycleTimeCounter++;
   }
+}
+
+float testGainExpo(float range)
+{
+  return exp(3*(parameter-1))*range;
+}
+
+float testGainLinear(float start, float stop)
+{
+  return start + parameter*(stop - start);
 }
 
 void configurationTask(float currentTime)
@@ -3549,16 +3444,6 @@ void configurationTask(float currentTime)
     calibrateStop = calibrate;
     calibrate = false;
    }
-}
-
-float testGainExpo(float range)
-{
-  return exp(3*(parameter-1))*range;
-}
-
-float testGainLinear(float start, float stop)
-{
-  return start + parameter*(stop - start);
 }
 
 void loopTask(float currentTime)
@@ -4070,141 +3955,6 @@ void loop()
       
       backgroundTask(250);
   }
-}
-
-void consoleNote(const char *s)
-{
-  consolePrint("// ");
-  consolePrint(s);
-}
-
-void consoleNoteLn(const char *s)
-{
-  consoleNote(s);
-  newline();
-}
-
-void consolePrint(const char *s)
-{
-  if(talk)
-    Serial.print(s);
-}
-
-void consolePrint(float v, int p)
-{
-  if(talk)
-    Serial.print(v, p);
-}
-
-void consolePrint(float v)
-{
-  consolePrint(v, 2);
-}
-
-void consolePrint(double v, int p)
-{
-  if(talk)
-    Serial.print(v, p);
-}
-
-void consolePrint(double v)
-{
-  consolePrint(v, 2);
-}
-
-void consolePrint(int v)
-{
-  if(talk)
-    Serial.print(v);
-}
-
-void consolePrint(unsigned int v)
-{
-  if(talk)
-    Serial.print(v);
-}
-
-void consolePrint(long v)
-{
-  if(talk)
-    Serial.print(v);
-}
-
-void consolePrint(unsigned long v)
-{
-  if(talk)
-    Serial.print(v);
-}
-
-void consolePrint(uint8_t v)
-{
-  if(talk)
-    Serial.print(v);
-}
-
-void newline(void)
-{
-  consolePrint("\n");
-}
-
-void consolePrintLn(const char *s)
-{
-  consolePrint(s);
-  newline();
-}
-
-void consolePrintLn(float v)
-{
-  consolePrint(v);
-  newline();
-}
-
-void consolePrintLn(float v, int p)
-{
-  consolePrint(v, p);
-  newline();
-}
-
-void consolePrintLn(double v)
-{
-  consolePrint(v);
-  newline();
-}
-
-void consolePrintLn(double v, int p)
-{
-  consolePrint(v, p);
-  newline();
-}
-
-void consolePrintLn(int v)
-{
-  consolePrint(v);
-  newline();
-}
-
-void consolePrintLn(unsigned int v)
-{
-  consolePrint(v);
-  newline();
-}
-
-void consolePrintLn(uint8_t v)
-{
-  consolePrint(v);
-  newline();
-}
-
-void consolePrintLn(long v)
-{
-  consolePrint(v);
-  newline();
-}
-
-void consolePrintLn(unsigned long v)
-{
-  consolePrint(v);
-  newline();
 }
 
 /* 
