@@ -255,9 +255,12 @@ struct PWMOutput {
   PWM_Ch_t pwmCh; // COMnA / COMnB / COMnC
 };
 
-struct HWTimer hwTimer1 = { &TCCR1A, &TCCR1B, &ICR1, { &OCR1A, &OCR1B, &OCR1C } };
-struct HWTimer hwTimer3 = { &TCCR3A, &TCCR3B, &ICR3, { &OCR3A, &OCR3B, &OCR3C } };
-struct HWTimer hwTimer4 = { &TCCR4A, &TCCR4B, &ICR4, { &OCR4A, &OCR4B, &OCR4C } };
+struct HWTimer hwTimer1 =
+       { &TCCR1A, &TCCR1B, &ICR1, { &OCR1A, &OCR1B, &OCR1C } };
+struct HWTimer hwTimer3 =
+       { &TCCR3A, &TCCR3B, &ICR3, { &OCR3A, &OCR3B, &OCR3C } };
+struct HWTimer hwTimer4 =
+       { &TCCR4A, &TCCR4B, &ICR4, { &OCR4A, &OCR4B, &OCR4C } };
 
 struct PWMOutput pwmOutput[] = {
        { 12, &hwTimer1, COMnB },
@@ -301,128 +304,10 @@ void pwmOutputInit(struct PWMOutput *output)
    *(output->timer->TCCRA) |= outputModeMask[output->pwmCh];
 }
 
-void servo_init_new(void)
+void servo_init(void)
 {
    for(int i = 0; i < sizeof(pwmOutput)/sizeof(struct PWMOutput); i++)
       pwmOutputInit(&pwmOutput[i]);
-}
-
-void servo_write_new(uint8_t ch, uint16_t value)
-{
-   *(pwmOutput[ch].timer->OCR[pwmOutput[ch].pwmCh])
-      = constrain_period(value) << 1;
-}
-
-void servo_init(void) {
-    // --------------------- TIMER1: CH_1 and CH_2 -----------------------
-    pinMode(12,HAL_GPIO_OUTPUT); // CH_1 (PB6/OC1B)
-    pinMode(11,HAL_GPIO_OUTPUT); // CH_2 (PB5/OC1A)
-
-    // WGM: 1 1 1 0. Clear Timer on Compare, TOP is ICR1.
-    // CS11: prescale by 8 => 0.5us tick
-    TCCR1A =(1<<COM1B1) | (1<<COM1A1) | ((1<<WGM11));
-    TCCR1B = (1<<WGM13)|(1<<WGM12)|(1<<CS11);
-    ICR1 = 40000; // 0.5us tick => 50hz freq
-    OCR1A = 0xFFFF; // Init OCR registers to nil output signal
-    OCR1B = 0xFFFF;
-
-    // --------------- TIMER4: CH_3, CH_4, and CH_5 ---------------------
-    pinMode(8,HAL_GPIO_OUTPUT); // CH_3 (PH5/OC4C)
-    pinMode(7,HAL_GPIO_OUTPUT); // CH_4 (PH4/OC4B)
-    pinMode(6,HAL_GPIO_OUTPUT); // CH_5 (PH3/OC4A)
-
-    // WGM: 1 1 1 0. Clear Timer on Compare, TOP is ICR4.
-    // CS41: prescale by 8 => 0.5us tick
-    TCCR4A = (1<<COM4C1) | (1<<COM4B1) | (1<<COM4A1) | ((1<<WGM41));
-    TCCR4B = (1<<WGM43)|(1<<WGM42)|(1<<CS41);
-    OCR4A = 0xFFFF; // Init OCR registers to nil output signal
-    OCR4B = 0xFFFF;
-    OCR4C = 0xFFFF;
-    ICR4 = 40000; // 0.5us tick => 50hz freq
-
-    //--------------- TIMER3: CH_6, CH_7, and CH_8 ----------------------
-    pinMode(3,HAL_GPIO_OUTPUT); // CH_6 (PE5/OC3C)
-    pinMode(2,HAL_GPIO_OUTPUT); // CH_7 (PE4/OC3B)
-    pinMode(5,HAL_GPIO_OUTPUT); // CH_8 (PE3/OC3A)
-
-    // WGM: 1 1 1 0. Clear timer on Compare, TOP is ICR3
-    // CS31: prescale by 8 => 0.5us tick
-    TCCR3A = (1<<COM3C1) | (1<<COM3B1) | (1<<COM3A1) | ((1<<WGM31));
-    TCCR3B = (1<<WGM33)|(1<<WGM32)|(1<<CS31);
-    OCR3A = 0xFFFF; // Init OCR registers to nil output signal
-    OCR3B = 0xFFFF;
-    OCR3C = 0xFFFF;
-    ICR3 = 40000; // 0.5us tick => 50hz freq
-}
-
-/* Output freq (1/period) control */
-void servo_set_freq(uint32_t chmask, uint16_t freq_hz) {
-    uint16_t icr = servo_timer_period(freq_hz);
-
-    if ((chmask & ( _BV(CH_1) | _BV(CH_2))) != 0) {
-        ICR1 = icr;
-    }
-
-    if ((chmask & ( _BV(CH_3) | _BV(CH_4) | _BV(CH_5))) != 0) {
-        ICR4 = icr;
-    }
-
-    if ((chmask & ( _BV(CH_6) | _BV(CH_7) | _BV(CH_8))) != 0) {
-        ICR3 = icr;
-    }
-}
-
-uint16_t servo_get_freq(uint8_t ch) {
-    uint16_t icr;
-    switch (ch) {
-        case CH_1:
-        case CH_2:
-            icr = ICR1;
-            break;
-        case CH_3:
-        case CH_4:
-        case CH_5:
-            icr = ICR4;
-            break; 
-        case CH_6:
-        case CH_7:
-        case CH_8:
-            icr = ICR3;
-            break;
-        default:
-            return 0;
-    }
-    /* transform to period by inverse of _time_period(icr). */
-    return (2000000UL / icr);
-}
-
-/* Output active/highZ control, either by single channel at a time
- * or a mask of channels */
- 
-void servo_enable_ch(uint8_t ch) {
-    switch(ch) {
-    case 0: TCCR1A |= (1<<COM1B1); break; // CH_1 : OC1B
-    case 1: TCCR1A |= (1<<COM1A1); break; // CH_2 : OC1A
-    case 2: TCCR4A |= (1<<COM4C1); break; // CH_3 : OC4C
-    case 3: TCCR4A |= (1<<COM4B1); break; // CH_4 : OC4B
-    case 4: TCCR4A |= (1<<COM4A1); break; // CH_5 : OC4A
-    case 5: TCCR3A |= (1<<COM3C1); break; // CH_6 : OC3C
-    case 6: TCCR3A |= (1<<COM3B1); break; // CH_7 : OC3B
-    case 7: TCCR3A |= (1<<COM3A1); break; // CH_8 : OC3A
-    }
-}
-
-void servo_disable_ch(uint8_t ch) {
-    switch(ch) {
-    case 0: TCCR1A &= ~(1<<COM1B1); break; // CH_1 : OC1B
-    case 1: TCCR1A &= ~(1<<COM1A1); break; // CH_2 : OC1A
-    case 2: TCCR4A &= ~(1<<COM4C1); break; // CH_3 : OC4C
-    case 3: TCCR4A &= ~(1<<COM4B1); break; // CH_4 : OC4B
-    case 4: TCCR4A &= ~(1<<COM4A1); break; // CH_5 : OC4A
-    case 5: TCCR3A &= ~(1<<COM3C1); break; // CH_6 : OC3C
-    case 6: TCCR3A &= ~(1<<COM3B1); break; // CH_7 : OC3B
-    case 7: TCCR3A &= ~(1<<COM3A1); break; // CH_8 : OC3A
-    }
 }
 
 /* constrain pwm to be between min and max pulsewidth. */
@@ -432,57 +317,11 @@ uint16_t constrain_period(uint16_t p) {
     return p;
 }
 
-/* Output, either single channel or bulk array of channels */
-void servo_write(uint8_t ch, uint16_t period_us) {
-    /* constrain, then scale from 1us resolution (input units)
-     * to 0.5us (timer units) */
-    uint16_t pwm = constrain_period(period_us) << 1;
-    switch(ch)
-    {
-    case 0:  OCR1B=pwm; break;  // out1
-    case 1:  OCR1A=pwm; break;  // out2
-    case 2:  OCR4C=pwm; break;  // out3
-    case 3:  OCR4B=pwm; break;  // out4
-    case 4:  OCR4A=pwm; break;  // out5
-    case 5:  OCR3C=pwm; break;  // out6
-    case 6:  OCR3B=pwm; break;  // out7
-    case 7:  OCR3A=pwm; break;  // out8
-    case 9:  OCR5B=pwm; break;  // out10
-    case 10: OCR5C=pwm; break;  // out11
-    }
+void servo_write(uint8_t ch, uint16_t value)
+{
+   *(pwmOutput[ch].timer->OCR[pwmOutput[ch].pwmCh])
+      = constrain_period(value) << 1;
 }
-
-/* Read back current output state, as either single channel or
- * array of channels. */
-uint16_t servo_read(uint8_t ch) {
-    uint16_t pwm=0;
-    switch(ch) {
-    case 0:  pwm=OCR1B; break;      // out1
-    case 1:  pwm=OCR1A; break;      // out2
-    case 2:  pwm=OCR4C; break;      // out3
-    case 3:  pwm=OCR4B; break;      // out4
-    case 4:  pwm=OCR4A; break;      // out5
-    case 5:  pwm=OCR3C; break;      // out6
-    case 6:  pwm=OCR3B; break;      // out7
-    case 7:  pwm=OCR3A; break;      // out8
-    case 9:  pwm=OCR5B; break;      // out10
-    case 10: pwm=OCR5C; break;      // out11
-    }
-    /* scale from 0.5us resolution (timer units) to 1us units */
-    return pwm>>1;
-
-}
-
-void servo_read(uint16_t* period_us, uint8_t len) {
-    for (int i = 0; i < len; i++) {
-        period_us[i] = servo_read(i);
-    }
-}
-
-uint16_t servo_timer_period(uint16_t speed_hz) {
-    return 2000000UL / speed_hz;
-}
-
 
 #else
 
@@ -1644,7 +1483,7 @@ void setup() {
   consoleNoteLn("Initializing servos");
 
 #ifdef MEGAMINI
-  servo_init_new();
+  servo_init();
 #else
   aileServo.attach(aileServoPin);
   elevatorServo.attach(elevatorServoPin);
@@ -3290,18 +3129,18 @@ void actuatorTask(float currentTime)
  
   if(armed) {
 #ifdef MEGAMINI
-    servo_write_new(0, 1500 + 500*clamp(paramRecord[stateRecord.model].aileDefl*aileOutput 
+    servo_write(0, 1500 + 500*clamp(paramRecord[stateRecord.model].aileDefl*aileOutput 
       + paramRecord[stateRecord.model].aileNeutral, -1, 1));
 
-    servo_write_new(1, 1500 + 500*clamp(paramRecord[stateRecord.model].elevDefl*elevOutput 
+    servo_write(1, 1500 + 500*clamp(paramRecord[stateRecord.model].elevDefl*elevOutput 
       + paramRecord[stateRecord.model].elevNeutral, -1, 1));
                               
-    servo_write_new(2, 1500 + 500*(clamp(paramRecord[stateRecord.model].flapNeutral 
+    servo_write(2, 1500 + 500*(clamp(paramRecord[stateRecord.model].flapNeutral 
                         + flapOutput*paramRecord[stateRecord.model].flapStep, -1, 1)));                              
 
-    servo_write_new(3, 1500 - 500*(gearOutput*2-1));
+    servo_write(3, 1500 - 500*(gearOutput*2-1));
 
-    servo_write_new(4, 1500 + 500*clamp(paramRecord[stateRecord.model].brakeNeutral + 
+    servo_write(4, 1500 + 500*clamp(paramRecord[stateRecord.model].brakeNeutral + 
                                 paramRecord[stateRecord.model].brakeDefl*brakeOutput, -1, 1));
 #else      
     aileServo.writeMicroseconds(1500 + 500*clamp(paramRecord[stateRecord.model].aileDefl*aileOutput 
