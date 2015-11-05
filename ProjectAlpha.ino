@@ -38,7 +38,7 @@ struct ModeRecord mode;
 boolean testMode = false;
 float testGain = 0;
 boolean calibrate, switchState = false, switchStateLazy = false, echoEnabled = true, logEnabled = false;
-boolean iasFailed = false, iasWarn = false, alphaFailed = false, alphaWarn = false, pciWarn = false;
+boolean iasFailed = false, iasWarn = false, ppmWarn = false, alphaFailed = false, alphaWarn = false, pciWarn = false;
 boolean calibrateStart = false, calibrateStop = false;
 float controlCycle = 5.0;
 boolean rxElevatorAlive = true, rxAileronAlive = true, rpmAlive = 0;
@@ -96,7 +96,7 @@ struct RxInputRecord {
 struct RxInputRecord aileInput, elevInput, switchInput, modeInput;
 
 #define AVR_RC_INPUT_NUM_CHANNELS 8
-#define AVR_RC_INPUT_MIN_CHANNELS 8
+#define AVR_RC_INPUT_MIN_CHANNELS 5
 
 /*
   mininum pulse width in microseconds to signal end of a PPM-SUM
@@ -104,7 +104,7 @@ struct RxInputRecord aileInput, elevInput, switchInput, modeInput;
   pulse width for OpenLRSng. Note that this is the total pulse with
   (typically 300us low followed by a long high pulse)
  */
-#define AVR_RC_INPUT_MIN_SYNC_PULSE_WIDTH 2500
+#define AVR_RC_INPUT_MIN_SYNC_PULSE_WIDTH 2700
 
 uint16_t _pulse_capt[AVR_RC_INPUT_NUM_CHANNELS];
 
@@ -132,36 +132,31 @@ ISR(TIMER5_CAPT_vect) {
 
     const uint16_t icr5_current = ICR5;
     uint16_t pulse_width;
+    
     if (icr5_current < icr5_prev) {
-        /* ICR5 rolls over at TOP=40000 */
-        pulse_width = icr5_current + 40000 - icr5_prev;
+        pulse_width =  0x10000L + icr5_current - icr5_prev;
     } else {
         pulse_width = icr5_current - icr5_prev;
     }
 
     if (pulse_width > AVR_RC_INPUT_MIN_SYNC_PULSE_WIDTH*2) {
-        // sync pulse detected.  Pass through values if at least a minimum number of channels received
-        if( channel_ctr >= AVR_RC_INPUT_MIN_CHANNELS ) {
+        // sync pulse
+	
+        if( channel_ctr < AVR_RC_INPUT_MIN_CHANNELS )
+	    ppmWarn = true;
+	else
              handlePPMInput(_pulse_capt, channel_ctr);
-        }
+ 
         channel_ctr = 0;
-    } else {
-        if (channel_ctr < AVR_RC_INPUT_NUM_CHANNELS) {
-            _pulse_capt[channel_ctr] = pulse_width;
-            channel_ctr++;
-            if (channel_ctr == AVR_RC_INPUT_NUM_CHANNELS) {
-               handlePPMInput(_pulse_capt, channel_ctr);
-            }
-        }
-    }
+    } else if (channel_ctr < AVR_RC_INPUT_NUM_CHANNELS)
+      	_pulse_capt[channel_ctr++] = pulse_width;
+
     icr5_prev = icr5_current;
 }
 
 #define HAL_GPIO_INPUT INPUT
 
 void ppm_input_init() {
- //   isrregistry->register_signal(ISR_REGISTRY_TIMER5_CAPT, _timer5_capt_cb);
-
     /* initialize overrides */
     /* Arduino pin 48 is ICP5 / PL1,  timer 5 input capture */
 
@@ -183,7 +178,7 @@ void ppm_input_init() {
     /* Set timer 8x prescaler fast PWM mode toggle compare at OCRA with rising edge input capture */
     TCCR5A = 0;
     TCCR5B = (1<<ICES5) | (1<<CS51);
-    OCR5A  = 40000 - 1; // -1 to correct for wrap
+    OCR5A  = 0xFFFF;
 
     /* Enable input capture interrupt */
     TIMSK5 = 1<<ICIE5;
@@ -210,8 +205,8 @@ struct PWMOutput pwmOutput[] = {
        { 2, &hwTimer3, COMnB },
        { 5, &hwTimer3, COMnA } };
 
-void *elevatorHandle = (void*) &pwmOutput[0];
-void *aileHandle = (void*) &pwmOutput[1];
+void *aileHandle = (void*) &pwmOutput[0];
+void *elevatorHandle = (void*) &pwmOutput[1];
 void *flapHandle = (void*) &pwmOutput[2];
 void *gearHandle = (void*) &pwmOutput[3];
 void *brakeHandle = (void*) &pwmOutput[4];
@@ -1894,6 +1889,8 @@ void executeCommand(const char *cmdBuf, int cmdBufLen)
       consolePrint(" SPURIOUS_PCINT");
     if(alphaWarn)
       consolePrint(" ALPHA_SENSOR");
+    if(ppmWarn)
+      consolePrint(" PPM_INPUT");
     if(eepromWarn)
       consolePrint(" EEPROM");
     if(eepromFailed)
@@ -1904,7 +1901,8 @@ void executeCommand(const char *cmdBuf, int cmdBufLen)
       consolePrint(" PUSHER");
     if(elevController.warn)
       consolePrint(" AUTOSTICK");
-    consoleNoteLn("");
+      
+    consolePrintLn("");
 
     consoleNote("Log write bandwidth = ");
     consolePrint(logBandWidth);
@@ -1912,8 +1910,8 @@ void executeCommand(const char *cmdBuf, int cmdBufLen)
     break;
 
   case c_reset:
-    pciWarn = alphaWarn = alphaFailed = pusher.warn = elevController.warn = alphaBuffer.warn
-      = eepromWarn = eepromFailed = false;
+    pciWarn = alphaWarn = alphaFailed = pusher.warn = elevController.warn
+      = alphaBuffer.warn = eepromWarn = eepromFailed = ppmWarn = false;
     consoleNoteLn("Warning flags reset");
     break;
     
@@ -2547,16 +2545,15 @@ void loopTask(float currentTime)
 /*    consolePrint(" IAS = ");
     consolePrint(sqrt(2*dynPressure));
 */
-/*
+
     consolePrint(" ppm_ch = ");
     consolePrint(ppmNumChannels);
-*/    
-/*
     consolePrint(" aileStick = ");
     consolePrint(aileStick);
     consolePrint(" elevStick = ");
     consolePrint(elevStick);
-*/    
+    
+/*
     consolePrint(" roll = ");
     consolePrint(rollAngle);
     consolePrint(" (rate = ");
@@ -2565,6 +2562,7 @@ void loopTask(float currentTime)
     consolePrint(pitchAngle);
     consolePrint(" (rate = ");
     consolePrint(pitchRate);
+*/
     /*
     consolePrint(") rpm = ");
     consolePrint(readRPM());
