@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <avr/interrupt.h>
 #include <avr/io.h>
-#include <Servo.h>
 #include <EEPROM.h>
 #include "config.h"
 #include "def.h"
@@ -14,7 +13,7 @@
 #include "Controller.h"
 #include "NewI2C.h"
 
-#define MEGAMINI
+// #define MEGAMINI
 
 NewI2C I2c = NewI2C();
 
@@ -92,29 +91,19 @@ struct GPSFix gpsFix;
 
 #define buttonPin 35
 
-#define aileServoPin  12
-#define elevatorServoPin  11
-#define flapServoPin  8
-#define gearServoPin  7
-#define brakeServoPin  7
-
-#ifdef MEGAMINI
-#define ppmInputPin 48
-#endif
-
 // Pin change stuff
 
 struct RxInputRecord {
-  int pin, port;
+  uint8_t pin, portBit;
   boolean freqOnly, alive;
   uint32_t pulseStart;
   uint32_t pulseCount;
   uint32_t pulseWidthAcc;
 };
 
-#define rpmPin A14
-
 #ifdef MEGAMINI
+
+#define ppmInputPin 48
 
 struct RxInputRecord aileInput, elevInput, switchInput, modeInput;
 
@@ -214,27 +203,7 @@ void ppm_input_init() {
     PERMIT;
   }
 
-#define HAL_GPIO_OUTPUT OUTPUT
-
-#define RC_OUTPUT_MIN_PULSEWIDTH 400
-#define RC_OUTPUT_MAX_PULSEWIDTH 2100
-
-typedef enum { COMnA = 0, COMnB = 1, COMnC = 2 } PWM_Ch_t;
-
-struct HWTimer {
-  volatile uint8_t *TCCRA, *TCCRB;
-  volatile uint16_t *ICR;
-  volatile uint16_t *OCR[3]; // 0... 2 = A ... C
-  boolean initDone;
-};
-
-const uint8_t outputModeMask[3] = { 1<<COM1A1, 1<<COM1B1, 1<<COM1C1 };
-
-struct PWMOutput {
-  int pin;
-  struct HWTimer *timer;
-  PWM_Ch_t pwmCh; // COMnA / COMnB / COMnC
-};
+#include "PWMOutput.h"
 
 struct HWTimer hwTimer1 =
        { &TCCR1A, &TCCR1B, &ICR1, { &OCR1A, &OCR1B, &OCR1C } };
@@ -253,88 +222,58 @@ struct PWMOutput pwmOutput[] = {
        { 2, &hwTimer3, COMnB },
        { 5, &hwTimer3, COMnA } };
 
-#define PWM_HZ 50
-#define TIMER_HZ (16e6/8)
+void *elevatorHandle = (void*) &pwmOutput[0];
+void *aileHandle = (void*) &pwmOutput[1];
+void *flapHandle = (void*) &pwmOutput[2];
+void *gearHandle = (void*) &pwmOutput[3];
+void *brakeHandle = (void*) &pwmOutput[4];
 
-void pwmTimerInit(struct HWTimer *timer)
+void servoOutput(void *handle, uint16_t value)
 {
-   if(timer->initDone)
-      return;
-      
-   // WGM, prescaling
-   
-   *(timer->TCCRA) = 1<<WGM11;
-   *(timer->TCCRB) = (1<<WGM13) | (1<<WGM12) | (1<<CS11);
-
-   // PWM frequency
-   
-   *(timer->ICR) = TIMER_HZ/PWM_HZ - 1;
-
-   // Output set to nil by default
-
-   for(int i = 0; i < 3; i++)
-      *(timer->OCR[i]) = 0xFFFF;
-
-   timer->initDone = true;
-}
-
-void pwmEnable(struct PWMOutput *output)
-{
-   *(output->timer->TCCRA) |= outputModeMask[output->pwmCh];
-}
-
-void pwmDisable(struct PWMOutput *output)
-{
-   *(output->timer->TCCRA) &= ~outputModeMask[output->pwmCh];
-}
-
-void pwmOutputInit(struct PWMOutput *output)
-{
-   pwmTimerInit(output->timer);
-   pinMode(output->pin, HAL_GPIO_OUTPUT);
-   pwmEnable(output);
-}
-
-void servo_init(void)
-{
-   for(int i = 0; i < sizeof(pwmOutput)/sizeof(struct PWMOutput); i++)
-      pwmOutputInit(&pwmOutput[i]);
-}
-
-/* constrain pwm to be between min and max pulsewidth. */
-uint16_t constrain_period(uint16_t p) {
-    if (p > RC_OUTPUT_MAX_PULSEWIDTH)
-       return RC_OUTPUT_MAX_PULSEWIDTH;
-    else if (p < RC_OUTPUT_MIN_PULSEWIDTH)
-       return RC_OUTPUT_MIN_PULSEWIDTH;
-    else return p;
-}
-
-void servo_write(uint8_t ch, uint16_t value)
-{
-   *(pwmOutput[ch].timer->OCR[pwmOutput[ch].pwmCh])
-      = constrain_period(value) << 1;
+  pwmOutputWrite((struct PWMOutput*) handle, value);
 }
 
 #else
 
-#define aileRxPin A8
-#define elevatorRxPin A9
-#define switchPin A11
-#define tuningKnobPin A13
-#define rpmPin A14
-
-#define RX_INPUT_PORT PINK
-#define RX_INPUT_PCMASK PCMSK2
-#define RX_INPUT_PCI 2
-#define RX_INPUT_PCI_VECT PCIINT2_vect
+#define aileRxPin	A8
+#define elevatorRxPin 	A9
+#define switchPin 	A11
+#define tuningKnobPin 	A13
 
 struct RxInputRecord aileInput = { aileRxPin, 0 }; 
 struct RxInputRecord elevInput = { elevatorRxPin, 1 };
 struct RxInputRecord switchInput = { switchPin, 3 };
 struct RxInputRecord modeInput = { tuningKnobPin, 5 };
 
+struct RxInputRecord *rxInputs[] = 
+  { &aileInput, &elevInput, &switchInput, &modeInput, NULL };
+
+struct RxInputRecord *rxInputByBit[8];
+
+#include <Servo.h>
+
+#define aileServoPin		2
+#define elevatorServoPin  	3
+#define flapServoPin		5
+#define gearServoPin  		6
+#define brakeServoPin  		7
+
+Servo elevatorServo, aileServo, flapServo, gearServo, brakeServo;  
+
+void *elevatorHandle = (void*) &elevatorServo;
+void *aileHandle = (void*) &aileServo;
+void *flapHandle = (void*) &flapServo;
+void *gearHandle = (void*) &gearServo;
+void *brakeHandle = (void*) &brakeServo;
+
+void servoOutput(void *handle, uint16_t value)
+{
+  ((Servo*) handle)->writeMicroseconds(value);
+}
+
 #endif
+
+#define rpmPin 		A14
 
 struct RxInputRecord rpmInput = { rpmPin, 6, false, true };
 
@@ -382,11 +321,6 @@ struct ParamRecord paramDefaults = {
       2,
        0.5, -0.3,
       -15.0/90, -50.0/90 };
-
-struct RxInputRecord *rxInputRecord[] = 
-  { &aileInput, &elevInput, &switchInput, &modeInput, NULL, NULL };
-
-struct RxInputRecord *rxInputPin[8];
 
 boolean inputValid(struct RxInputRecord *record)
 {
@@ -815,7 +749,6 @@ RunningAvgFilter alphaFilter;
 AlphaBuffer alphaBuffer, pressureBuffer;
 
 float elevOutput = 0, aileOutput = 0, flapOutput = 0, gearOutput = 1, brakeOutput = 0;
-Servo elevatorServo, aileServo, flapServo, gearServo, brakeServo;  
   
 typedef enum {  l_alpha, 
                 l_dynpressure, 
@@ -1339,34 +1272,39 @@ void logDumpBinary(void)
 }
 
 #ifndef MEGAMINI
+
 uint8_t log2Table[1<<8];
-#endif
 
-#ifdef RX_INPUT_PCI_VECT
+ISR(BADISR_vect)
+{
+   sei();
+   consoleNoteLn("PASKA KESKEYTYS.");
+   abort();
+}
 
-ISR(RX_INPUT_PCI_VECT)
+ISR(PCINT2_vect)
 {
   static uint8_t prevState;
-  uint8_t state = RX_INPUT_PORT, event = (state ^ prevState) & RX_INPUT_PCMASK;
+  uint8_t state = PINK, event = (state ^ prevState);
   prevState = state;
-
+  
   uint32_t current = micros();
   
   while(event) {
     uint8_t i = log2Table[event];
-    uint8_t mask = 1<<i;
+    uint8_t mask = 1U<<i;
   
-    if(!rxInputPin[i]) {
+    if(!rxInputByBit[i]) {
       pciWarn = true;
-    } else if(rxInputPin[i]->freqOnly) {
-      rxInputPin[i]->pulseCount += (state & mask) ? 1 : 0;
+    } else if(rxInputByBit[i]->freqOnly) {
+      rxInputByBit[i]->pulseCount += (state & mask) ? 1 : 0;
     } else if(state & mask) {
-      rxInputPin[i]->pulseStart = current;
-    } else if(rxInputPin[i]->pulseStart > 0) {
-      uint32_t width = current - rxInputPin[i]->pulseStart;
-      rxInputPin[i]->pulseWidthAcc += width;
-      rxInputPin[i]->pulseCount++;      
-      rxInputPin[i]->alive = true;
+      rxInputByBit[i]->pulseStart = current;
+    } else if(rxInputByBit[i]->pulseStart > 0) {
+      uint32_t width = current - rxInputByBit[i]->pulseStart;
+      rxInputByBit[i]->pulseWidthAcc += width;
+      rxInputByBit[i]->pulseCount++;      
+      rxInputByBit[i]->alive = true;
     }
     
     event &= ~mask;
@@ -1401,14 +1339,10 @@ void setup() {
   
   // I2C
   
-#ifdef USE_FUCKING_CRAP_WIRE_I2C_LIBRARY
-  Wire.begin();  
-#else
   I2c.begin();
   I2c.setSpeed(true);
   I2c.pullup(true);
   I2c.timeOut(2+EXT_EEPROM_LATENCY/1000);
-#endif
 
   // Param record
   
@@ -1438,11 +1372,15 @@ void setup() {
 #ifdef MEGAMINI
   // PPM input
   
+  consoleNoteLn("  Initializing PPM receiver");
+  
   pinMode(48, INPUT);
   
   ppm_input_init();
   
 #else
+  consoleNoteLn("  Initializing individual PWM inputs");
+
   pinMode(elevatorRxPin, INPUT);
   pinMode(aileRxPin, INPUT);
   pinMode(switchPin, INPUT);
@@ -1456,16 +1394,23 @@ void setup() {
     log2Table[i] = j;
   }
 
-  PCICR |= 1<<RX_INPUT_PCI;
+  FORBID;
+
+  PCMSK2 = 0;
   
-  for(int i = 0; rxInputRecord[i]; i++) {
-    RX_INPUT_PCMASK |= (1<<rxInputRecord[i]->port);
-    rxInputPin[rxInputRecord[i]->port] = rxInputRecord[i];
+  for(int i = 0; rxInputs[i]; i++) {
+    PCMSK2 |= 1<<rxInputs[i]->portBit;
+    rxInputByBit[rxInputs[i]->portBit] = rxInputs[i];
   }
+  
+  PCICR |= 1<<PCIE2;
+
+  PERMIT;
+
 #endif
   
-  aileFilter.setWindowLen(3);
-  elevFilter.setWindowLen(3);
+  aileFilter.setWindowLen(1);
+  elevFilter.setWindowLen(1);
 
   // RPM sensor int control
   
@@ -1476,13 +1421,15 @@ void setup() {
   consoleNoteLn("Initializing servos");
 
 #ifdef MEGAMINI
-  servo_init();
+  pwmOutputInitList(pwmOutput, sizeof(pwmOutput)/sizeof(struct PWMOutput));
 #else
+
   aileServo.attach(aileServoPin);
   elevatorServo.attach(elevatorServoPin);
   flapServo.attach(flapServoPin);
   gearServo.attach(gearServoPin);
   brakeServo.attach(brakeServoPin);
+
 #endif
 
   //
@@ -1532,11 +1479,11 @@ float readRPM() {
 
 void rpmMeasure(boolean on)
 {
-#if defined(RX_INPUT_PCMASK) && defined(rpmPin)
+#if defined(rpmPin)
   if(on)
-    RX_INPUT_PCMASK |= 1<<rpmInput.port;
+    PCMSK2 |= 1<<rpmInput.portBit;
   else
-    RX_INPUT_PCMASK &= ~(1<<rpmInput.port);
+    PCMSK2 &= ~(1<<rpmInput.portBit);
 #endif
 }
 
@@ -2244,9 +2191,9 @@ void executeCommandSeries(const char *buffer, int len)
 
 void annexCode() {} 
 
-#define CONTROL_HZ 150
-#define ALPHA_HZ (CONTROL_HZ*4)
-#define ACTUATOR_HZ CONTROL_HZ
+#define CONTROL_HZ 100
+#define ALPHA_HZ (CONTROL_HZ*6)
+#define ACTUATOR_HZ CONTROL_HZ/2
 #define TRIM_HZ 10
 #define LED_HZ 3
 #define LED_TICK 100
@@ -3121,35 +3068,19 @@ void actuatorTask(float currentTime)
   // Actuators
  
   if(armed) {
-#ifdef MEGAMINI
-    servo_write(0, 1500 + 500*clamp(paramRecord[stateRecord.model].aileDefl*aileOutput 
+    servoOutput(aileHandle, 1500 + 500*clamp(paramRecord[stateRecord.model].aileDefl*aileOutput 
       + paramRecord[stateRecord.model].aileNeutral, -1, 1));
 
-    servo_write(1, 1500 + 500*clamp(paramRecord[stateRecord.model].elevDefl*elevOutput 
+    servoOutput(elevatorHandle, 1500 + 500*clamp(paramRecord[stateRecord.model].elevDefl*elevOutput 
       + paramRecord[stateRecord.model].elevNeutral, -1, 1));
                               
-    servo_write(2, 1500 + 500*(clamp(paramRecord[stateRecord.model].flapNeutral 
+    servoOutput(flapHandle, 1500 + 500*(clamp(paramRecord[stateRecord.model].flapNeutral 
                         + flapOutput*paramRecord[stateRecord.model].flapStep, -1, 1)));                              
 
-    servo_write(3, 1500 - 500*(gearOutput*2-1));
+    servoOutput(gearHandle, 1500 - 500*(gearOutput*2-1));
 
-    servo_write(4, 1500 + 500*clamp(paramRecord[stateRecord.model].brakeNeutral + 
-                                paramRecord[stateRecord.model].brakeDefl*brakeOutput, -1, 1));
-#else      
-    aileServo.writeMicroseconds(1500 + 500*clamp(paramRecord[stateRecord.model].aileDefl*aileOutput 
-      + paramRecord[stateRecord.model].aileNeutral, -1, 1));
-      
-    elevatorServo.writeMicroseconds(1500 + 500*clamp(paramRecord[stateRecord.model].elevDefl*elevOutput 
-      + paramRecord[stateRecord.model].elevNeutral, -1, 1));
-                              
-    flapServo.writeMicroseconds(1500 + 500*(clamp(paramRecord[stateRecord.model].flapNeutral 
-                        + flapOutput*paramRecord[stateRecord.model].flapStep, -1, 1)));                              
-
-    gearServo.writeMicroseconds(1500 - 500*(gearOutput*2-1));
-
-    brakeServo.writeMicroseconds(1500 + 500*clamp(paramRecord[stateRecord.model].brakeNeutral + 
-                                paramRecord[stateRecord.model].brakeDefl*brakeOutput, -1, 1));
-#endif                                
+    servoOutput(brakeHandle, 1500 + 500*clamp(paramRecord[stateRecord.model].brakeNeutral + 
+                                paramRecord[stateRecord.model].brakeDefl*brakeOutput, -1, 1));                        
   }
 }
 
