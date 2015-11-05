@@ -12,8 +12,9 @@
 #include "Console.h"
 #include "Controller.h"
 #include "NewI2C.h"
+#include "Storage.h"
 
-// #define MEGAMINI
+#define MEGAMINI
 
 NewI2C I2c = NewI2C();
 
@@ -21,11 +22,6 @@ NewI2C I2c = NewI2C();
 #define PERMIT if(!--nestCount) sei()
 
 uint8_t nestCount;
-
-typedef enum { init_c, stop_c, run_c } logState_t;
-
-int32_t logPtr, logLen, logSize;
-uint16_t logEndStamp;
 
 struct ModeRecord {
   boolean sensorFailSafe;
@@ -42,7 +38,7 @@ struct ModeRecord mode;
 boolean testMode = false;
 float testGain = 0;
 boolean calibrate, switchState = false, switchStateLazy = false, echoEnabled = true, logEnabled = false;
-boolean iasFailed = false, iasWarn = false, alphaFailed = false, alphaWarn = false, pciWarn = false, eepromWarn = false, eepromFailed = false;
+boolean iasFailed = false, iasWarn = false, alphaFailed = false, alphaWarn = false, pciWarn = false;
 boolean calibrateStart = false, calibrateStop = false;
 float controlCycle = 5.0;
 boolean rxElevatorAlive = true, rxAileronAlive = true, rpmAlive = 0;
@@ -54,7 +50,6 @@ const float tau = 0.1;
 float dynPressure, alpha, aileStick, elevStick, aileStickRaw, elevStickRaw;
 RunningAvgFilter aileFilter, elevFilter;
 float controlCycleEnded;
-logState_t logState;
 int initCount = 5;
 boolean armed = false, talk = true;
 float neutralStick = 0.0, neutralAlpha, targetAlpha;
@@ -62,8 +57,6 @@ float switchValue, tuningKnobValue, rpmOutput;
 Controller elevController, aileController, pusher;
 float autoAlphaP, maxAlpha;
 float acc,altitude,  heading, rollAngle, pitchAngle, rollRate, pitchRate;
-int logBytesCum;
-float logBandWidth;
 int cycleTimeCounter = 0;
 Median3Filter cycleTimeFilter;
 boolean cycleTimesDone = false;
@@ -81,11 +74,6 @@ struct GPSFix {
 struct GPSFix gpsFix;
 
 #define BAUDRATE 115200
-
-#define EXT_EEPROM_SIZE (1L<<17)
-#define EXT_EEPROM_PAGE (1L<<7)
-#define EXT_EEPROM_LATENCY 5000
-#define PAGE_MASK ~(EXT_EEPROM_PAGE-1)
 
 #define INT_EEPROM_SIZE (1<<12)
 
@@ -459,192 +447,13 @@ uint16_t stateRecordCrc(struct NVStateRecord *record)
 
 const int paramOffset = 0;
 const int stateOffset = MAX_MODELS*sizeof(ParamRecord);
-const int logOffset = stateOffset+sizeof(NVStateRecord);
 
 struct ParamRecord paramRecord[MAX_MODELS];
 struct NVStateRecord stateRecord;
 
-boolean handleFailure(const char *name, boolean fail, boolean *warn, boolean *failed, int *count)
-{
-  if(*failed)
-    return true;
-    
-  if(fail) {
-    *warn = true;
-    
-    consoleNote("Bad ");
-    consolePrintLn(name);
-    
-    if(++(*count) > 10) {
-      consoleNote("");
-      consolePrint(name);
-      consolePrintLn(" failed");
-      *failed = true;
-    }
-  } else {    
-    if(*count > 0) {
-      consoleNote("");
-      consolePrint(name);
-      consolePrintLn(" recovered");
-      *count = 0;
-    }
-  }
-  
-  return fail;
-}
-
-int eepromFailCount = 0;
-uint32_t lastWriteTime;
-
-void waitEEPROM(uint32_t addr)
-{
-  if(micros() - lastWriteTime > EXT_EEPROM_LATENCY)
-    // We're cool
-    return;
-    
-  // Write latency not met, wait for acknowledge
-
-  handleFailure("EEPROM wait",
-     I2c.wait((uint8_t) (paramRecord[stateRecord.model].i2c_24L256
-     			+ (uint8_t) ((addr>>16) & 0x7))) != 0, 
-                  	&eepromWarn, &eepromFailed, &eepromFailCount);
-}
-
-void writeEEPROM(uint32_t addr, const uint8_t *data, int bytes) 
-{
-  if(eepromFailed)
-    return;
-    
-  waitEEPROM(addr);
-  boolean fail = I2c.write(  (uint8_t) paramRecord[stateRecord.model].i2c_24L256 + (uint8_t) ((addr>>16) & 0x7), 
-                             (uint16_t) (addr & 0xFFFFL), 
-                             data, bytes) != 0;
-  handleFailure("EEPROM write", fail, &eepromWarn, &eepromFailed, &eepromFailCount);
-  lastWriteTime = micros();
-}
- 
-boolean readEEPROM(uint32_t addr, uint8_t *data, int size) 
-{
-  if(eepromFailed)
-    return true;
-    
-  waitEEPROM(addr);
-
-  boolean fail = I2c.read((uint8_t) paramRecord[stateRecord.model].i2c_24L256 + (uint8_t) ((addr>>16) & 0x7), (uint16_t) (addr & 0xFFFFL), data, size) != 0;
-  
-  return handleFailure("EEPROM read", fail, &eepromWarn, &eepromFailed, &eepromFailCount);
-
-}
-
-uint8_t cacheData[EXT_EEPROM_PAGE];
-boolean cacheFlag[EXT_EEPROM_PAGE];
-boolean cacheValid, cacheModified;
-uint32_t cacheTag;
-
-void cacheFlush(void)
-{
-  if(!cacheModified)
-    return;
-    
-  int i = 0;
-  
-  do {
-    while(!cacheFlag[i] && i < EXT_EEPROM_PAGE)
-      i++;
-    
-    if(i < EXT_EEPROM_PAGE) {
-      int l = 0;
-      
-      while(cacheFlag[i+l] && i+l < EXT_EEPROM_PAGE) {
-        cacheFlag[i+l] = false;
-        l++;
-      }
-
-      writeEEPROM(cacheTag + i, &cacheData[i], l);
-        
-      i += l;
-    }
-  } while(i < EXT_EEPROM_PAGE);
-  
-  cacheModified = false;
-}
-
-#define CACHE_TAG(a) ((a) & PAGE_MASK)
-
-boolean cacheHit(uint32_t addr)
-{
-  return CACHE_TAG(addr) == cacheTag;
-}
-
-void cacheAlloc(uint32_t addr)
-{
-  cacheFlush();
-  cacheTag = CACHE_TAG(addr);
-  cacheValid = false;
-}
-
-void cacheWriteLine(uint32_t addr, const uint8_t *value, int size)
-{  
-  if(!cacheHit(addr))
-    cacheAlloc(addr);
-    
-  for(int i = 0; i < size; i++) {
-    cacheData[(addr & ~PAGE_MASK) + i] = value[i];
-    cacheFlag[(addr & ~PAGE_MASK) + i] = true;
-  }
-  
-  cacheValid = false;
-  cacheModified = true;
-  logBytesCum += size;
-}
-
-void cacheWrite(uint32_t addr, const uint8_t *value, int size)
-{
-  if(CACHE_TAG(addr) != CACHE_TAG(addr+size-1)) {
-    uint32_t split = CACHE_TAG(addr+size-1);
-    
-    cacheWriteLine(addr, value, split - addr);
-    cacheWriteLine(split, &value[split - addr], size - (split - addr));
-  } else
-    cacheWriteLine(addr, value, size);
-}
-
-void cacheRead(uint32_t addr, uint8_t *value, int size) 
-{
-  if(cacheModified || !cacheHit(addr))
-    cacheAlloc(addr);
-  
-  if(!cacheValid) {
-    if(readEEPROM(cacheTag, cacheData, EXT_EEPROM_PAGE)) {
-      for(int i = 0; i < EXT_EEPROM_PAGE; i++)
-        cacheData[i] = 0xFF;
-    }
-    cacheValid = true;
-  }
-  
-  for(int i = 0; i < size; i++)
-    value[i] = cacheData[(addr & ~PAGE_MASK) + i];  
-}
-
 boolean read5048B(uint8_t addr, uint8_t *storage, int bytes) 
 {
-#ifdef USE_FUCKING_CRAP_WIRE_I2C_LIBRARY
-
-  Wire.beginTransmission((uint8_t) paramRecord[stateRecord.model].i2c_5048B);
-  Wire.write(addr);
-  Wire.endTransmission(false);
-  
-  Wire.requestFrom((uint8_t) paramRecord[stateRecord.model].i2c_5048B,  (uint8_t) bytes);
-
-  int count = Wire.available();
-
-  for(int i = 0; i < count; i++)
-    storage[i] = Wire.read();
-
-  return count == bytes;   
-#else
   return I2c.read(paramRecord[stateRecord.model].i2c_5048B, addr, storage, bytes) == 0;
-#endif
 }
 
 const uint8_t addr4525_c = 0x28;
@@ -723,6 +532,12 @@ void storeNVState(void)
   stateRecord.crc = stateRecordCrc(&stateRecord);
   writeBlock((const char*) &stateRecord, stateOffset, sizeof(stateRecord));
 }
+
+typedef enum { init_c, stop_c, run_c } logState_t;
+
+logState_t logState;
+int32_t logPtr, logLen, logSize;
+uint16_t logEndStamp;
 
 void logWrite(int32_t index, const uint16_t *value, int count)
 {
@@ -1271,16 +1086,16 @@ void logDumpBinary(void)
   }
 }
 
-#ifndef MEGAMINI
-
-uint8_t log2Table[1<<8];
-
 ISR(BADISR_vect)
 {
    sei();
    consoleNoteLn("PASKA KESKEYTYS.");
    abort();
 }
+
+#ifndef MEGAMINI
+
+uint8_t log2Table[1<<8];
 
 ISR(PCINT2_vect)
 {

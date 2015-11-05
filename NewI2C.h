@@ -1,4 +1,9 @@
+#ifndef NEWI2C_H
+#define NEWI2C_H
+
 #include <Arduino.h>
+
+boolean handleFailure(const char *name, boolean fail, boolean *warn, boolean *failed, int *count);
 
 class NewI2C
 {
@@ -27,5 +32,7 @@ class NewI2C
     uint8_t nack;
     static uint16_t timeOutDelay;
 };
+
+#endif
 
 

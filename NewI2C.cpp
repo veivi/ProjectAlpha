@@ -21,6 +21,35 @@
 
 uint16_t NewI2C::timeOutDelay = 0;
 
+boolean handleFailure(const char *name, boolean fail, boolean *warn, boolean *failed, int *count)
+{
+  if(*failed)
+    return true;
+    
+  if(fail) {
+    *warn = true;
+    
+    consoleNote("Bad ");
+    consolePrintLn(name);
+    
+    if(++(*count) > 10) {
+      consoleNote("");
+      consolePrint(name);
+      consolePrintLn(" failed");
+      *failed = true;
+    }
+  } else {    
+    if(*count > 0) {
+      consoleNote("");
+      consolePrint(name);
+      consolePrintLn(" recovered");
+      *count = 0;
+    }
+  }
+  
+  return fail;
+}
+
 ////////////// Public Methods ////////////////////////////////////////
 
 void NewI2C::begin()
