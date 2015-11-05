@@ -1,0 +1,17 @@
+#ifndef PPM_H
+#define PPM_H
+
+#include <Arduino.h>
+
+// Pin change stuff
+
+struct RxInputRecord {
+  uint8_t pin, portBit;
+  boolean freqOnly, alive;
+  uint32_t pulseStart;
+  uint32_t pulseCount;
+  uint32_t pulseWidthAcc;
+};
+
+#endif
+

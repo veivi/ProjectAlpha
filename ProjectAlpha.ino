@@ -13,13 +13,11 @@
 #include "Controller.h"
 #include "NewI2C.h"
 #include "Storage.h"
+#include "Interrupt.h"
 
 #define MEGAMINI
 
 NewI2C I2c = NewI2C();
-
-#define FORBID if(!nestCount++) cli()
-#define PERMIT if(!--nestCount) sei()
 
 uint8_t nestCount;
 
@@ -38,7 +36,7 @@ struct ModeRecord mode;
 boolean testMode = false;
 float testGain = 0;
 boolean calibrate, switchState = false, switchStateLazy = false, echoEnabled = true, logEnabled = false;
-boolean iasFailed = false, iasWarn = false, ppmWarn = false, alphaFailed = false, alphaWarn = false, pciWarn = false;
+boolean iasFailed = false, iasWarn = false, alphaFailed = false, alphaWarn = false, pciWarn = false;
 boolean calibrateStart = false, calibrateStop = false;
 float controlCycle = 5.0;
 boolean rxElevatorAlive = true, rxAileronAlive = true, rpmAlive = 0;
@@ -79,114 +77,17 @@ struct GPSFix gpsFix;
 
 #define buttonPin 35
 
-// Pin change stuff
-
-struct RxInputRecord {
-  uint8_t pin, portBit;
-  boolean freqOnly, alive;
-  uint32_t pulseStart;
-  uint32_t pulseCount;
-  uint32_t pulseWidthAcc;
-};
-
 #ifdef MEGAMINI
+
+#include "PPM.h"
+#include "PWMOutput.h"
 
 #define ppmInputPin 48
 
 struct RxInputRecord aileInput, elevInput, switchInput, modeInput;
 
-#define AVR_RC_INPUT_NUM_CHANNELS 8
-#define AVR_RC_INPUT_MIN_CHANNELS 5
-
-/*
-  mininum pulse width in microseconds to signal end of a PPM-SUM
-  frame. This value is chosen to be smaller than the default 3000 sync
-  pulse width for OpenLRSng. Note that this is the total pulse with
-  (typically 300us low followed by a long high pulse)
- */
-#define AVR_RC_INPUT_MIN_SYNC_PULSE_WIDTH 2700
-
-uint16_t _pulse_capt[AVR_RC_INPUT_NUM_CHANNELS];
-
-struct RxInputRecord *ppmInputRecord[AVR_RC_INPUT_NUM_CHANNELS] = 
+struct RxInputRecord *ppmInputs[] = 
 { &aileInput, &elevInput, NULL, NULL, &switchInput, &modeInput };
-
-uint8_t ppmNumChannels;
-
-void handlePPMInput(const uint16_t *pulse, int numCh)
-{
-  ppmNumChannels = numCh;
-
-  for(int i = 0; i < numCh; i++) {
-    if(ppmInputRecord[i]) {
-       ppmInputRecord[i]->alive = true;
-       ppmInputRecord[i]->pulseCount++;
-       ppmInputRecord[i]->pulseWidthAcc += pulse[i]/2;              
-     }
-  }
-}
-
-ISR(TIMER5_CAPT_vect) {
-    static uint16_t icr5_prev;
-    static uint8_t  channel_ctr;
-
-    const uint16_t icr5_current = ICR5;
-    uint16_t pulse_width;
-    
-    if (icr5_current < icr5_prev) {
-        pulse_width =  0x10000L + icr5_current - icr5_prev;
-    } else {
-        pulse_width = icr5_current - icr5_prev;
-    }
-
-    if (pulse_width > AVR_RC_INPUT_MIN_SYNC_PULSE_WIDTH*2) {
-        // sync pulse
-	
-        if( channel_ctr < AVR_RC_INPUT_MIN_CHANNELS )
-	    ppmWarn = true;
-	else
-             handlePPMInput(_pulse_capt, channel_ctr);
- 
-        channel_ctr = 0;
-    } else if (channel_ctr < AVR_RC_INPUT_NUM_CHANNELS)
-      	_pulse_capt[channel_ctr++] = pulse_width;
-
-    icr5_prev = icr5_current;
-}
-
-#define HAL_GPIO_INPUT INPUT
-
-void ppm_input_init() {
-    /* initialize overrides */
-    /* Arduino pin 48 is ICP5 / PL1,  timer 5 input capture */
-
-    /**
-     * WGM: 1 1 1 1. Fast WPM, TOP is in OCR5A
-     * COM all disabled
-     * CS51: prescale by 8 => 0.5us tick
-     * ICES5: input capture on rising edge
-     * OCR5A: 40000, 0.5us tick => 2ms period / 50hz freq for outbound
-     * fast PWM.
-     */
-
-    FORBID;
-    
-    /* Timer cleanup before configuring */
-    TCNT5 = 0;
-    TIFR5 = 0;
-    
-    /* Set timer 8x prescaler fast PWM mode toggle compare at OCRA with rising edge input capture */
-    TCCR5A = 0;
-    TCCR5B = (1<<ICES5) | (1<<CS51);
-    OCR5A  = 0xFFFF;
-
-    /* Enable input capture interrupt */
-    TIMSK5 = 1<<ICIE5;
-     
-    PERMIT;
-  }
-
-#include "PWMOutput.h"
 
 struct HWTimer hwTimer1 =
        { &TCCR1A, &TCCR1B, &ICR1, { &OCR1A, &OCR1B, &OCR1C } };
@@ -1177,19 +1078,17 @@ void setup() {
               
   // Rx input
 
-  consoleNoteLn("Initializing RX inputs");
-
 #ifdef MEGAMINI
   // PPM input
   
-  consoleNoteLn("  Initializing PPM receiver");
+  consoleNoteLn("Initializing PPM receiver");
   
   pinMode(48, INPUT);
   
-  ppm_input_init();
+  ppmInputInit(ppmInputs, sizeof(ppmInputs)/sizeof(struct RxInputRecord*));
   
 #else
-  consoleNoteLn("  Initializing individual PWM inputs");
+  consoleNoteLn("Initializing individual PWM inputs");
 
   pinMode(elevatorRxPin, INPUT);
   pinMode(aileRxPin, INPUT);
