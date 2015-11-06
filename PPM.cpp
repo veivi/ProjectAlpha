@@ -16,6 +16,7 @@
 static uint16_t _pulse_capt[AVR_RC_INPUT_MAX_CHANNELS];
 
 uint8_t ppmNumChannels;
+uint32_t ppmFrames;
 boolean ppmWarn;
 
 static struct RxInputRecord **inputRecords;
@@ -24,6 +25,7 @@ static int numInputs;
 static void handlePPMInput(const uint16_t *pulse, int numCh)
 {
   ppmNumChannels = numCh;
+  ppmFrames++;
 
   for(int i = 0; i < numCh; i++) {
     if(inputRecords[i]) {
@@ -51,9 +53,9 @@ ISR(TIMER5_CAPT_vect) {
         // sync pulse
 	
         if( channel_ctr < AVR_RC_INPUT_MIN_CHANNELS )
-	    ppmWarn = true;
+	   ppmWarn = true;
 	else
-             handlePPMInput(_pulse_capt, channel_ctr);
+           handlePPMInput(_pulse_capt, channel_ctr);
  
         channel_ctr = 0;
     } else if (channel_ctr < numInputs)

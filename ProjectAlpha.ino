@@ -19,7 +19,7 @@
 #include "Logging.h"
 #include "NVState.h"
 
-// #define MEGAMINI
+#define MEGAMINI
 
 NewI2C I2c = NewI2C();
 
@@ -1282,7 +1282,7 @@ void cacheTask(float currentTime)
   cacheFlush();
 }
 
-static void logStartCallback()
+void logStartCallback()
 {
   logAlpha();
   logAttitude();
@@ -1452,8 +1452,15 @@ int compareFloat(const void *a, const void *b)
   else return 0;    
 }
 
+float ppmFreq;
+
 void measurementTask(float currentTime)
 {
+  FORBID;
+  ppmFreq = ppmFrames / (currentTime - prevMeasurement);
+  ppmFrames = 0;
+  PERMIT;
+
   logBandWidth = logBytesCum / (currentTime - prevMeasurement);
   logBytesCum = 0;
   prevMeasurement = currentTime;
@@ -1510,14 +1517,14 @@ void configurationTask(float currentTime)
   int prev = switchState;
   switchState = readSwitch();
   boolean switchStateChange = switchState != prev;
-   /*
+
   if(initCount > 0) {
     if(rxElevatorAlive && rxAileronAlive)
       initCount--;
       
     return;
   }
-*/
+
   static uint32_t lastUpdate;
           
   if(switchStateChange) {
@@ -1787,8 +1794,8 @@ void loopTask(float currentTime)
     consolePrint(sqrt(2*dynPressure));
 */
 
-    consolePrint(" ppm_ch = ");
-    consolePrint(ppmNumChannels);
+    consolePrint(" ppmFreq = ");
+    consolePrint(ppmFreq);
     consolePrint(" aileStick = ");
     consolePrint(aileStick);
     consolePrint(" elevStick = ");
