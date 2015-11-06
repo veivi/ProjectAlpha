@@ -19,6 +19,8 @@
 #include "Logging.h"
 #include "NVState.h"
 
+#define BAUDRATE 115200
+
 #define MEGAMINI
 
 NewI2C I2c = NewI2C();
@@ -37,6 +39,17 @@ struct ModeRecord {
 };
 
 struct ModeRecord mode;
+
+struct GPSFix {
+  float altitude;
+  float track;
+  float lat;
+  float lon;
+  float speed;
+};
+
+struct GPSFix gpsFix;
+
 boolean testMode = false;
 float testGain = 0;
 boolean calibrate, switchState = false, switchStateLazy = false, echoEnabled = true;
@@ -46,7 +59,8 @@ float controlCycle = 5.0;
 boolean rxElevatorAlive = true, rxAileronAlive = true, rpmAlive = 0;
 const int cycleTimeWindow = 31;
 float cycleTimeStore[cycleTimeWindow];
-int cycleTimePtr = 0, cycleTimesValid = 0;
+int cycleTimePtr = 0;
+boolean cycleTimesValid;
 float cycleMin = -1.0, cycleMax = -1.0, cycleMean = -1.0, cycleCum = -1.0;
 const float tau = 0.1;
 float dynPressure, alpha, aileStick, elevStick, aileStickRaw, elevStickRaw;
@@ -69,22 +83,6 @@ AlphaBuffer alphaBuffer, pressureBuffer;
 
 float elevOutput = 0, aileOutput = 0, flapOutput = 0, gearOutput = 1, brakeOutput = 0;
   
-struct GPSFix {
-  float altitude;
-  float track;
-  float lat;
-  float lon;
-  float speed;
-};
-
-struct GPSFix gpsFix;
-
-#define BAUDRATE 115200
-
-#define INT_EEPROM_SIZE (1<<12)
-
-#define buttonPin 35
-
 #ifdef MEGAMINI
 
 #include "PWMOutput.h"
@@ -131,6 +129,8 @@ void servoOutput(void *handle, uint16_t value)
 #define switchPin 	A11
 #define tuningKnobPin 	A13
 
+#define buttonPin 	35
+
 struct RxInputRecord aileInput = { aileRxPin }; 
 struct RxInputRecord elevInput = { elevatorRxPin };
 struct RxInputRecord switchInput = { switchPin };
@@ -167,9 +167,6 @@ void servoOutput(void *handle, uint16_t value)
 #endif
 
 #define minAlpha paramRecord[stateRecord.model].alphaMin
-
-// #define min(a,b) ((a) < (b) ? (a) : (b))
-// #define max(a,b) ((a) > (b) ? (a) : (b))
 
 void printParams(struct ParamRecord *p)
 {
@@ -488,7 +485,7 @@ void setup() {
 
 #ifdef MEGAMINI
 
-pwmOutputInitList(pwmOutput, sizeof(pwmOutput)/sizeof(struct PWMOutput));
+  pwmOutputInitList(pwmOutput, sizeof(pwmOutput)/sizeof(struct PWMOutput));
 
 #else
 
@@ -517,8 +514,9 @@ pwmOutputInitList(pwmOutput, sizeof(pwmOutput)/sizeof(struct PWMOutput));
   
   // Configuration input
 
+#ifdef buttonPin
   pinMode(buttonPin, INPUT_PULLUP);
-
+#endif
   // LED output
   
   LEDPIN_PINMODE;
@@ -1768,6 +1766,7 @@ void configurationTask(float currentTime)
 
   // Calibration button
 
+#ifdef buttonPin
   if(digitalRead(buttonPin) == 0) {
     calibrateStart = !calibrate;
     calibrate = true;
@@ -1775,6 +1774,7 @@ void configurationTask(float currentTime)
     calibrateStop = calibrate;
     calibrate = false;
    }
+#endif
 }
 
 void loopTask(float currentTime)
