@@ -165,7 +165,7 @@ void servoOutput(void *handle, uint16_t value)
 
 #define rpmPin 		A14
 
-struct RxInputRecord rpmInput = { rpmPin, 6, false, true };
+struct RxInputRecord rpmInput = { rpmPin };
 
 #define minAlpha paramRecord[stateRecord.model].alphaMin
 
@@ -362,7 +362,9 @@ ISR(BADISR_vect)
 {
    sei();
    consoleNoteLn("PASKA KESKEYTYS.");
-   abort();
+
+   if(!armed)
+     abort();
 }
 
 #ifndef MEGAMINI
@@ -372,7 +374,8 @@ uint8_t log2Table[1<<8];
 ISR(PCINT2_vect)
 {
   static uint8_t prevState;
-  uint8_t state = PINK, event = (state ^ prevState);
+  uint8_t state = PINK, event = (state ^ prevState) & PCMSK2;
+
   prevState = state;
   
   uint32_t current = micros();
@@ -444,17 +447,17 @@ void setup() {
   
   consoleNoteLn("Initializing PPM receiver");
   
-  pinMode(48, INPUT);
+  pinMode(48, INPUT_PULLUP);
   
   ppmInputInit(ppmInputs, sizeof(ppmInputs)/sizeof(struct RxInputRecord*));
   
 #else
   consoleNoteLn("Initializing individual PWM inputs");
 
-  pinMode(elevatorRxPin, INPUT);
-  pinMode(aileRxPin, INPUT);
-  pinMode(switchPin, INPUT);
-  pinMode(tuningKnobPin, INPUT);
+  pinMode(elevatorRxPin, INPUT_PULLUP);
+  pinMode(aileRxPin, INPUT_PULLUP);
+  pinMode(switchPin, INPUT_PULLUP);
+  pinMode(tuningKnobPin, INPUT_PULLUP);
   pinMode(rpmPin, INPUT_PULLUP);  
 
   for(int i = 1; i < (1<<8); i++) {
@@ -1195,7 +1198,7 @@ void executeCommand(const char *cmdBuf, int cmdBufLen)
     
    case c_defaults:
 //      paramRecord[stateRecord.model] = paramDefaults;
-      consoleNoteLn("Defaults restored");
+//      consoleNoteLn("Defaults restored");
       break;
       
    case c_params:
