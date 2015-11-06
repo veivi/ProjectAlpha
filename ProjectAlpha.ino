@@ -527,8 +527,6 @@ pwmOutputInitList(pwmOutput, sizeof(pwmOutput)/sizeof(struct PWMOutput));
   BUZZERPIN_PINMODE;
 }
 
-const int alphaBits = 14;
-
 boolean readSwitch() {
   return decodePWM(switchValue) < 0.0;
 }
@@ -1949,9 +1947,6 @@ void gpsInput(const char *buf, int len)
 {
   for(int i = 0; i < len; i++) {
     if(buf[i] == '\r') {
-//      consoleNote("GPS : ");
-//      consolePrintLn(gpsMsg);
-      
       if(!strncmp(gpsMsg, "$GP", 3) && gpsChecksum()) {
         gpsSentence(&gpsMsg[3]);
       } else
@@ -1960,17 +1955,10 @@ void gpsInput(const char *buf, int len)
       gpsMsgLen = 0;        
       gpsMsg[0] = '\0';
     } else if(buf[i] != '\n' && gpsMsgLen < gpsBufLen-1) {
-//      consoleNote("GPS : ");
-//      consolePrintLn(buf[i]);
       gpsMsg[gpsMsgLen++] = buf[i];
       gpsMsg[gpsMsgLen] = '\0';
     }
   }
-}
-
-float sign(float x)
-{
-  return x < 0.0 ? -1.0 : 1.0;
 }
 
 void gpsTask(float currentTime)

@@ -5,6 +5,7 @@
 
 const int windowLenMax = 8;
 
+float sign(float x);
 float clamp(float value, float a, float b);
 float mixValue(float mixRatio, float a, float b);
 

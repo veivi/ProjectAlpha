@@ -2,6 +2,11 @@
 #include "Console.h"
 #include <math.h>
 
+float sign(float x)
+{
+  return x < 0.0 ? -1.0 : 1.0;
+}
+
 float clamp(float value, float a, float b)
 {
   if(a > b) {
