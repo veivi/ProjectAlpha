@@ -1,0 +1,10 @@
+#include "NVState.h"
+
+// NV store layout
+
+const int paramOffset = 0;
+const int stateOffset = MAX_MODELS*sizeof(ParamRecord);
+
+struct ParamRecord paramRecord[MAX_MODELS];
+struct NVStateRecord stateRecord;
+

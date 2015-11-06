@@ -1,0 +1,46 @@
+#ifndef NVSTATE_H
+#define NVSTATE_H
+
+#include <Arduino.h>
+
+// Parameters and non-volatile state
+
+struct ParamRecord {
+  uint16_t crc;
+  uint8_t i2c_5048B, i2c_24L256;
+  uint8_t clk_5048B, clk_24L256;
+  uint16_t alphaRef;
+  float elevDefl, aileDefl;
+  float elevZero, aileZero;
+  float elevNeutral, aileNeutral;
+  float alphaMin, alphaMax, alphaNeutral;
+  float i_Kp, i_Ki, i_Kd, o_P;
+  float s_Kp, s_Ki, s_Kd;
+  int filtLen;
+  float flapNeutral, flapStep;
+  float brakeNeutral, brakeDefl;
+};
+
+struct NVStateRecord {
+  uint16_t crc;
+  int logStamp;
+  int model;
+  boolean logRPM;
+  int testChannel;
+};
+
+struct ParamRecord paramDefaults = {
+      0,
+      64, 0x50, 
+      12, 12,
+      0,
+      -25.0/90, -50.0/90,
+      0, 0, 0, 0,
+      -3.0/360,  12.0/360,  0,
+      0.65, 0.35, 0.04, 35.0, 
+      0.5, 1.2, 0.01,
+      2,
+       0.5, -0.3,
+      -15.0/90, -50.0/90 };
+
+#endif

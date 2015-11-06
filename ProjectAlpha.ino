@@ -14,7 +14,10 @@
 #include "NewI2C.h"
 #include "Storage.h"
 #include "Interrupt.h"
+#include "RxInput.h"
 #include "PPM.h"
+#include "Logging.h"
+#include "NVState.h"
 
 // #define MEGAMINI
 
@@ -36,7 +39,7 @@ struct ModeRecord {
 struct ModeRecord mode;
 boolean testMode = false;
 float testGain = 0;
-boolean calibrate, switchState = false, switchStateLazy = false, echoEnabled = true, logEnabled = false;
+boolean calibrate, switchState = false, switchStateLazy = false, echoEnabled = true;
 boolean iasFailed = false, iasWarn = false, alphaFailed = false, alphaWarn = false, pciWarn = false;
 boolean calibrateStart = false, calibrateStop = false;
 float controlCycle = 5.0;
@@ -62,6 +65,11 @@ boolean cycleTimesDone = false;
 float prevMeasurement;
 float parameter;  
 
+RunningAvgFilter alphaFilter;
+AlphaBuffer alphaBuffer, pressureBuffer;
+
+float elevOutput = 0, aileOutput = 0, flapOutput = 0, gearOutput = 1, brakeOutput = 0;
+  
 struct GPSFix {
   float altitude;
   float track;
@@ -164,63 +172,6 @@ struct RxInputRecord rpmInput = { rpmPin, 6, false, true };
 // #define min(a,b) ((a) < (b) ? (a) : (b))
 // #define max(a,b) ((a) > (b) ? (a) : (b))
 
-// Parameters and non-volatile state
-
-struct ParamRecord {
-  uint16_t crc;
-  uint8_t i2c_5048B, i2c_24L256;
-  uint8_t clk_5048B, clk_24L256;
-  uint16_t alphaRef;
-  float elevDefl, aileDefl;
-  float elevZero, aileZero;
-  float elevNeutral, aileNeutral;
-  float alphaMin, alphaMax, alphaNeutral;
-  float i_Kp, i_Ki, i_Kd, o_P;
-  float s_Kp, s_Ki, s_Kd;
-  int filtLen;
-  float flapNeutral, flapStep;
-  float brakeNeutral, brakeDefl;
-};
-
-struct NVStateRecord {
-  uint16_t crc;
-  int logStamp;
-  int model;
-  boolean logRPM;
-  int testChannel;
-};
-
-struct ParamRecord paramDefaults = {
-      0,
-      64, 0x50, 
-      12, 12,
-      0,
-      -25.0/90, -50.0/90,
-      0, 0, 0, 0,
-      -3.0/360,  12.0/360,  0,
-      0.65, 0.35, 0.04, 35.0, 
-      0.5, 1.2, 0.01,
-      2,
-       0.5, -0.3,
-      -15.0/90, -50.0/90 };
-
-boolean inputValid(struct RxInputRecord *record)
-{
-  return record->pulseCount > 0;
-}
-
-float inputValue(struct RxInputRecord *record)
-{
-  FORBID;
-  
-  uint32_t count = record->pulseCount, acc = record->pulseWidthAcc;
-  record->pulseWidthAcc = record->pulseCount = 0;
-  
-  PERMIT;
-  
-  return (float) acc / count;
-}
-
 void printParams(struct ParamRecord *p)
 {
   consoleNote("  24L256 addr = ");
@@ -295,66 +246,12 @@ void dumpParams(struct ParamRecord *p)
   consolePrint("; filtlen "); consolePrint(p->filtLen);
 }
 
-uint16_t crc16_update(uint16_t crc, uint8_t a)
-{
-  crc ^= a;
-  for (int i = 0; i < 8; ++i) {
-    if (crc & 1)
-      crc = (crc >> 1) ^ 0xA001U;
-    else
-      crc = (crc >> 1);
-  }
-  
-  return crc;
-}
-
-uint16_t crc16(uint16_t initial, const uint8_t *data, int len)
-{
-  uint16_t crc = initial;
-  
-  for(int i = 0; i < len; i++)
-    crc = crc16_update(crc, data[i]);
-    
-  return crc;
-}
-
-uint16_t crc16OfRecord(uint16_t initial, const uint8_t *record, int size)
-{
-  return crc16(initial, &record[sizeof(uint16_t)], size - sizeof(uint16_t));
-}
-
-uint16_t paramRecordCrc(struct ParamRecord *record)
-{
-  return crc16OfRecord(0xFFFF, (uint8_t*) record, sizeof(*record));
-}
-
-struct NVStateRecord stateDefaults = { 0, 400, 0, false, 0 };
-
-uint16_t stateRecordCrc(struct NVStateRecord *record)
-{
-  return crc16OfRecord(0xFFFF, (uint8_t*) record, sizeof(*record));
-}
-
-// NV store layout
-
-#define MAX_MODELS   4
-
-const int paramOffset = 0;
-const int stateOffset = MAX_MODELS*sizeof(ParamRecord);
-
-struct ParamRecord paramRecord[MAX_MODELS];
-struct NVStateRecord stateRecord;
+const uint8_t addr5048B_c = 0x40;
+const uint8_t addr4525_c = 0x28;
 
 boolean read5048B(uint8_t addr, uint8_t *storage, int bytes) 
 {
-  return I2c.read(paramRecord[stateRecord.model].i2c_5048B, addr, storage, bytes) == 0;
-}
-
-const uint8_t addr4525_c = 0x28;
-
-boolean read4525DO(uint8_t *storage, int bytes) 
-{
-  return I2c.read(addr4525_c, NULL, 0, storage, bytes) == 0;
+  return I2c.read(addr5048B_c, addr, storage, bytes) == 0;
 }
 
 boolean read5048B_byte(uint8_t addr, byte *result)
@@ -375,6 +272,11 @@ boolean read5048B_word14(uint8_t addr, uint16_t *result)
   return success;
 }
 
+boolean read4525DO(uint8_t *storage, int bytes) 
+{
+  return I2c.read(addr4525_c, NULL, 0, storage, bytes) == 0;
+}
+
 boolean read4525DO_word14(uint16_t *result)
 {
   uint8_t buf[sizeof(uint16_t)];
@@ -391,250 +293,6 @@ boolean read4525DO_word14(uint16_t *result)
 float decodePWM(float pulse) {
   const float txRange = 0.81;
   return (pulse - 1500)/500.0/txRange;
-}
-
-void readBlock(char *ptr, uint16_t addr, int size)
-{
-  for(int i = 0; i < size; i++)
-    ptr[i] = EEPROM.read(addr+i);
-}
-
-void writeBlock(const char *ptr, uint16_t addr, int size)
-{
-  for(int i = 0; i < size; i++)
-    EEPROM.write(addr+i, ptr[i]);
-}
-
-void readParams(void)
-{
-  readBlock((char*) paramRecord, paramOffset, sizeof(paramRecord));
-}
-
-void storeParams(void)
-{
-  paramRecord[stateRecord.model].crc = paramRecordCrc(&paramRecord[stateRecord.model]);
-  writeBlock((const char*) &paramRecord[stateRecord.model], paramOffset+stateRecord.model*sizeof(struct ParamRecord), sizeof(struct ParamRecord));
-}
-
-void readNVState(void)
-{
-  readBlock((char*) &stateRecord, stateOffset, sizeof(stateRecord));
-}
-
-void storeNVState(void)
-{
-  stateRecord.crc = stateRecordCrc(&stateRecord);
-  writeBlock((const char*) &stateRecord, stateOffset, sizeof(stateRecord));
-}
-
-typedef enum { init_c, stop_c, run_c } logState_t;
-
-logState_t logState;
-int32_t logPtr, logLen, logSize;
-uint16_t logEndStamp;
-
-void logWrite(int32_t index, const uint16_t *value, int count)
-{
-  if(logState == init_c || logSize < 1)
-    return;
-    
-  cacheWrite(index*sizeof(uint16_t), (const uint8_t*) value, count*sizeof(uint16_t));
-  logLen = -1L;
-}
-
-void logWrite(int32_t index, const uint16_t value)
-{
-  logWrite(index, &value, 1);
-}
-
-uint16_t logRead(int32_t index)
-{
-  uint16_t entry = 0;
-  cacheRead(index*sizeof(entry), (uint8_t*) &entry, sizeof(entry));
-  return entry;
-}
-
-RunningAvgFilter alphaFilter;
-AlphaBuffer alphaBuffer, pressureBuffer;
-
-float elevOutput = 0, aileOutput = 0, flapOutput = 0, gearOutput = 1, brakeOutput = 0;
-  
-typedef enum {  l_alpha, 
-                l_dynpressure, 
-                l_acc, 
-                l_roll, 
-                l_rollrate, 
-                l_pitch, 
-                l_pitchrate, 
-                l_heading, 
-                l_ailestick, 
-                l_elevstick, 
-                l_aileron, 
-                l_elevator, 
-                l_mode, 
-                l_target, 
-                l_trim, 
-                l_gain, 
-                l_test, 
-                l_rpm,
-                l_speed,
-                l_track,
-                l_altgps, 
-                l_altbaro, 
-                l_channels } ChannelId_t;
-
-struct LogChannel {
-  ChannelId_t ch;
-  const char *name;
-  float small, large;
-  boolean tick;
-  uint16_t value;
-};
-
-// Must match the order with logChannelId_t declaration!!
-
-struct LogChannel logChannels[] = {
-   { l_alpha, "ALPH", -180, 180, true },
-   { l_dynpressure, "PRES", -100, 10000 },
-   { l_acc, "G", 0, 10 },
-   { l_roll, "ROLL", -180, 180 },
-   { l_rollrate, "RRTE", -360, 360 },
-   { l_pitch, "PTCH", -90, 90 },
-   { l_pitchrate, "PRTE", -360, 360 },
-   { l_heading, "HEAD", -180, 180},
-   { l_ailestick, "ASTK", -1, 1 },
-   { l_elevstick, "ESTK", -1, 1 },
-   { l_aileron, "AILE", -1, 1 },
-   { l_elevator, "ELEV", -1, 1 },
-   { l_mode, "MODE", 0, 255 },
-   { l_target, "TARG", -180, 180 },
-   { l_trim, "TRIM", -180, 180 },
-   { l_gain, "GAIN", 0, 50},
-   { l_test, "TEST", 0, 255},
-   { l_rpm, "RPM", 0, 50000 },
-   { l_speed, "VELO", 0, 300 },
-   { l_track, "TRAK", 0, 360 },
-   { l_altgps, "ALTG", -10, 300 },
-   { l_altbaro, "ALTB", -10, 300 } };
-
-#define TOKEN_MASK (1U<<15)
-#define VALUE_MASK (~TOKEN_MASK)
-#define DELTA_MASK (VALUE_MASK>>1)
-#define uint16_tOKEN(t) (TOKEN_MASK | (t))
-#define ENTRY_VALUE(v) (((uint16_t) v) & VALUE_MASK)
-#define ENTRY_IS_TOKEN(e) ((e) & TOKEN_MASK)
-
-typedef enum { t_stamp,
-               t_start, 
-               t_mark, 
-               t_channel = t_stamp + (1<<8),
-               t_delta = t_stamp + (1<<14)
-            } LogToken_t;
-
-#define logIndex(i) ((logPtr + logSize + (i)) % logSize)
-
-void logInit(void)
-{
-  uint32_t eepromSize = 1;
-  uint8_t dummy;
-  
-  logSize = 0;
-    
-  while(!readEEPROM(eepromSize, &dummy, 1))
-    eepromSize *= 2;
-    
-  if(!readEEPROM(eepromSize-1, &dummy, 1)) {
-    logSize = eepromSize/sizeof(uint16_t);
-
-    consoleNote("Inferred log size = ");
-    consolePrint(logSize/(1<<10));
-    consolePrintLn("k entries");
-  } else
-    consoleNoteLn("Log EEPROM failed");
-  
-  logState = init_c;
-  logLen = -1;
-}
-
-void logCommit(int bytes)
-{
-  if(logState == init_c)
-    return;
-    
-  logPtr = logIndex(bytes);
-}
-
-boolean logDirty = false;
-
-void logEnter(const uint16_t *value, int count)
-{
-  if(logState == init_c)
-    return;
-    
-  logWrite(logIndex(0), value, count);
-  uint16_t buffer[2] = { uint16_tOKEN(t_stamp), logEndStamp };
-  logWrite(logIndex(count), buffer, 2);
-  logCommit(count);
-  
-  logDirty = true;
-}
-
-void logEnter(uint16_t value)
-{
-  logEnter(&value, 1);
-}
-
-void logClear(void)
-{
-  if(logState == init_c)
-    return;
-    
-  consoleNoteLn("Log CLEARED");
-    
-  stateRecord.logStamp++;
-  logEnter(uint16_tOKEN(t_start));
-  storeNVState();
-}
-  
-  int prevCh = -1;
-
-void logWithCh(int ch, uint16_t value)
-{
-  if(!logEnabled || logState != run_c)
-    return;
-
-  value = ENTRY_VALUE(value);    // Constrain to valid range
-  
-  if(!logChannels[ch].tick && value == logChannels[ch].value)
-    // Repeat value, not stored
-    
-    return;
-            
-  if(ch == prevCh) {
-    // Same channel as previous, store as delta
-    
-    logEnter(uint16_tOKEN(t_delta) | (DELTA_MASK & ((value - logChannels[ch].value)>>1)));
-    
-  } else if(prevCh > -1 && ch == prevCh + 1) {
-    // Channel prediction good, just store value
-    
-    logEnter(value);
-  } else {
-    // Set channel first
-    
-    uint16_t buffer[2] = { uint16_tOKEN(t_channel + ch), value };
-    logEnter(buffer, 2);
-  }
-    
-  logChannels[ch].value = value;
-  prevCh = ch;
-}
-
-void logGeneric(int ch, float value)
-{
-  float small = logChannels[ch].small, large = logChannels[ch].large;
-  
-  logWithCh(ch, (uint16_t) ((float) VALUE_MASK*clamp((value-small)/(large-small), 0, 1)));
 }
 
 void logAlpha(void)
@@ -700,286 +358,6 @@ void logAttitude(void)
   logGeneric(l_heading, heading);
 }
 
-void logMark(void)
-{
-  logEnter(uint16_tOKEN(t_mark));
-}
-
-
-void logEnable()
-{
-  if(logEnabled)
-    return;
-    
-  logEnabled = true;
-  
-  for(int i = 0; i < l_channels; i++)
-    logChannels[i].value = TOKEN_MASK;
-  
-  prevCh = -1;  
-  
-  consoleNoteLn("Logging ENABLED");
-}
-
-void logDisable()
-{
-  if(!logEnabled)
-    return;
-    
-  logMark();
-  logEnabled = false;
-  
-  consoleNoteLn("Logging DISABLED");
-}
-
-int col;
-  
-void logPrintValue(float v)
-{
-  float av = abs(v);
-  
-  if(col > 72) {
-    consolePrintLn("");
-    col = 0;
-  }
-  
-  if(av < 0.001) {
-    col++;
-    consolePrint(0);
-    } else if(abs(av - 1) < 0.001){
-    consolePrint(v < 0.0 ? -1 : 1);
-    col += v < 0.0 ? 2 : 1;
-    } else {
-      int decimals = av < 1 ? 3 : av < 10 ? 2 : av < 100 ? 1 : 0;
-    consolePrint(v, decimals);
-    col += 3 + (v < 0.0 ? 1 : 0) + (decimals > 0 ? 1 : 0) + (av < 1.0 ? 1 : 0)
-      + (av >= 1000.0 ? 1 : 0) + (av >= 10000.0 ? 1 : 0);
-  }
-  
-  col++; // account for the comma
-}
-
-void logDump(int ch)
-{
-  if(logState == init_c) {
-    consoleNoteLn("Log initialization not completed yet");
-    return;
-  }
-  
-  if(ch < 0) {
-    for(ch = 0; ch < l_channels; ch++)
-      logDump(ch);
-
-    consolePrint("fdr_");
-    consolePrint(stateRecord.logStamp);
-    consolePrint("_matrix = [ ");
-
-    for(ch = 0; ch < l_channels; ch++) {
-      if(ch > 0) 
-          consolePrint("; ");
-
-      consolePrint("fdr_");
-      consolePrint(stateRecord.logStamp);
-      consolePrint("_");
-      consolePrint(logChannels[ch].name);
-    }
-    
-    consolePrint(" ]\n");
-
-    consoleNoteLn("FLIGHT DATA RECORD WITH INDEX");
-    
-    consolePrint("fdr_");
-    consolePrint(stateRecord.logStamp);
-    consolePrint(" = { fdr_");
-    consolePrint(stateRecord.logStamp);
-    consolePrint("_matrix, ");
-    
-    for(ch = 0; ch < l_channels; ch++) {
-      consolePrint("\"");
-      consolePrint(logChannels[ch].name);
-      consolePrint("\"");
-      
-      if(ch < l_channels-1)
-        consolePrint(", ");
-    }
-    
-    consolePrintLn(" }");
-    
-    return;
-  }
-  
-  int32_t len = logLen, notFirst = 0;
-
-  if(len < 0) {
-    consoleNote("Looking for log start...");
-    
-    while(len < logSize-1 && logRead(logIndex(-len-1)) != uint16_tOKEN(t_start)) {
-      if(len % 5000 == 0)
-        consolePrint(".");
-      len++;
-    }
-        
-    consolePrint(" found, log length = ");
-    consolePrintLn(len);
-  
-    logLen = len;
-  }
-  
-  consoleNote("CHANNEL ");
-  consolePrint(ch);
-  consolePrint(" (");
-  consolePrint(logChannels[ch].name);
-  consolePrintLn(") DATA");
-  
-  consolePrint("fdr_");
-  consolePrint(stateRecord.logStamp);
-  consolePrint("_");
-  consolePrint(logChannels[ch].name);
-  consolePrint(" = [ ");
-
-  float small = logChannels[ch].small, large = logChannels[ch].large;
-  int currentCh = -1, nextCh = -1;
-  uint16_t valueRaw = 0;
-  boolean valueValid = false;
-  float value = 0.0;
-
-  col = 20;
-    
-  for(int32_t i = 0; i < logLen; i++) {
-    uint16_t entry = logRead(logIndex(-logLen+i));
-
-    if(ENTRY_IS_TOKEN(entry) && ENTRY_VALUE(entry) < t_delta) {
-      LogToken_t token = (LogToken_t) ENTRY_VALUE(entry);
-      
-      switch(token) {
-        case t_stamp:
-          // End marker, a count follows, ignore both
-          i++;
-          break;
-          
-        case t_start:
-          break;
-          
-        case t_mark:
-          // Mark
-                      
-          for(int j = 0; j < 5; j++) {
-            if(notFirst)
-              consolePrint(",");
-            logPrintValue(large); 
-            consolePrint(",");
-            logPrintValue(small);
-            notFirst++;
-          }
-          break;
-          
-        default:
-          if(token >= t_channel && token < t_channel+l_channels) {
-            // Valid channel id
-      
-            nextCh = token - t_channel;
-          } else {
-            // Invalid token
-      
-            if(notFirst)
-              consolePrint(",");
-            consolePrint("\n -360 // *** Invalid entry ");
-            consolePrintLn(entry);
-            notFirst++;
-            break;
-          }
-      }
-    } else {
-      // A log value entry
-
-      if(!ENTRY_IS_TOKEN(entry))
-        currentCh = nextCh;
-      
-      if(logChannels[currentCh].tick) {
-        if(notFirst)
-          consolePrint(",");
-            
-        if(valueValid)
-          logPrintValue(value);
-        else
-          logPrintValue((notFirst & 1) ? small : large);
-            
-        notFirst++;
-      }
-
-      if(currentCh == ch) {
-        if(ENTRY_IS_TOKEN(entry)) {
-          // Delta value
-                  
-          valueRaw = ENTRY_VALUE(valueRaw + ((ENTRY_VALUE(entry) - t_delta) << 1));
-                    
-        } else {
-          // Absolute value
-                    
-          valueRaw = entry;
-        }
-        
-        value = (float) (large - small) * valueRaw / VALUE_MASK + small;
-        valueValid = true;
-      }
-
-      if(currentCh > -1)
-        nextCh = currentCh + 1;
-    }
-  }
-
-  consolePrintLn(" ]");
-}
-
-#define WORD6_CHAR(v, s)  (' ' + (((v)>>(s*6)) & 0x3F))
-
-void logDumpBinary(void)
-{
-  int32_t len = 0;
-
-  consoleNote("Looking for log start... ");
-
-  while(len < logSize-1 && logRead(logIndex(-len-1)) != uint16_tOKEN(t_start))
-    len++;
-  
-  consolePrint("found, log length = ");
-  consolePrintLn(len);
-  
-  int lineLen = 0;
-  
-  uint16_t buf[3];
-  int count = 0;
-  
-  for(int32_t i = 0; i < len; i++) {
-    buf[count++] = logRead(logIndex(-len+i));
-    
-    if(count == 3) {
-      uint64_t tmp = *((uint64_t*) buf);
-      
-      char string[] = {
-        WORD6_CHAR(tmp, 0),      
-        WORD6_CHAR(tmp, 1),      
-        WORD6_CHAR(tmp, 2),      
-        WORD6_CHAR(tmp, 3),      
-        WORD6_CHAR(tmp, 4),      
-        WORD6_CHAR(tmp, 5),      
-        WORD6_CHAR(tmp, 6),      
-        WORD6_CHAR(tmp, 7),     
-        '\0' };
-        
-      consolePrint(string);
-    
-      lineLen += 8;
-      if(lineLen >= 72) {
-        consolePrintLn("");
-        lineLen = 0;
-      }
-      
-      count = 0;
-    }
-  }
-}
-
 ISR(BADISR_vect)
 {
    sei();
@@ -1034,15 +412,6 @@ void setup() {
 
   readNVState();
     
-  consoleNote("  State record CRC = ");
-  consolePrint(stateRecord.crc);
-    
-  if(stateRecord.crc != stateRecordCrc(&stateRecord)) {
-    consolePrintLn(" CORRUPT, using defaults"); 
-    stateRecord = stateDefaults;
-  } else
-    consolePrintLn(" OK");
-
   consoleNote("Current model is ");
   consolePrintLn(stateRecord.model);
   
@@ -1060,12 +429,6 @@ void setup() {
   for(int i = 0; i < MAX_MODELS; i++) {
     consoleNote("MODEL ");
     consolePrintLn(i);
-    
-    if(paramRecordCrc(&paramRecord[i]) != paramRecord[i].crc) {
-      consoleNoteLn("  Param record corrupt, using defaults"); 
-      paramRecord[i] = paramDefaults;
-    }
-    
     printParams(&paramRecord[i]);    
   }
 
@@ -1166,10 +529,6 @@ void setup() {
   STABLEPIN_PINMODE;
   POWERPIN_PINMODE;
   BUZZERPIN_PINMODE;
-
-  // Initialise log
-  
-  logInit();
 }
 
 const int alphaBits = 14;
@@ -1741,8 +1100,8 @@ void executeCommand(const char *cmdBuf, int cmdBufLen)
     break;
     
   case c_init:
-    logEndStamp = ENTRY_VALUE(-100);
-    logPtr = logSize - 1;
+//    logEndStamp = ENTRY_VALUE(-100);
+//    logPtr = logSize - 1;
 
   case c_clear:
     logClear();
@@ -1835,9 +1194,8 @@ void executeCommand(const char *cmdBuf, int cmdBufLen)
     break;
     
    case c_defaults:
-      paramRecord[stateRecord.model] = paramDefaults;
+//      paramRecord[stateRecord.model] = paramDefaults;
       consoleNoteLn("Defaults restored");
-      printParams(&paramDefaults);
       break;
       
    case c_params:
@@ -1921,39 +1279,20 @@ void cacheTask(float currentTime)
   cacheFlush();
 }
 
+static void logStartCallback()
+{
+  logAlpha();
+  logAttitude();
+  logInput();
+  logActuator();
+  logConfig();
+  logPosition();
+  logRPM();
+}
+
 void logSaveTask(float currentTime)
 {
-  switch(logState) {
-    case stop_c:
-      if(logEnabled) {
-        consoleNoteLn("Logging STARTED");
-      
-        logState = run_c;
-    
-        for(int i = 0; i < 4; i++)
-          logMark();
-  
-        logAlpha();
-        logAttitude();
-        logInput();
-        logActuator();
-        logConfig();
-        logPosition();
-        logRPM();
-      }
-      break;
-      
-    case run_c:
-      if(!logEnabled) {
-        consoleNoteLn("Logging STOPPED");
-        logState = stop_c;
-      } else if(logDirty) {
-        logDirty = false;
-        logCommit(2);
-        logEndStamp = ENTRY_VALUE(logEndStamp + 1);
-      }
-      break;
-  }
+  logSave(logStartCallback);
 }
 
 void alphaTask(float currentTime)
@@ -2805,9 +2144,19 @@ void trimTask(float currentTime)
   }
 }
 
+boolean logInitialized;
+
+void backgroundTask(long durationMicros)
+{
+  logInitialized = logInit(durationMicros);
+  
+  if(logInitialized)
+    delayMicroseconds(durationMicros);
+}
+
 void blinkTask(float currentTime)
 {
-  float ledRatio = testMode ? 0.0 : logState == init_c ? 1.0 : (mode.sensorFailSafe || !armed) ? 0.5 : alpha > 0.0 ? 0.90 : 0.10;
+  float ledRatio = testMode ? 0.0 : !logInitialized ? 1.0 : (mode.sensorFailSafe || !armed) ? 0.5 : alpha > 0.0 ? 0.90 : 0.10;
   static int tick = 0;
   
   tick = (tick + 1) % (LED_TICK/LED_HZ);
@@ -2817,13 +2166,6 @@ void blinkTask(float currentTime)
   } else {
     STABLEPIN_OFF;
   }
-/*  
-  if(abs(elevStick) < 0.2)
-    elevStick = 0.5;
-  
-  if(tick == 0)
-    elevStick = -elevStick;
-    */
 }
 
 struct Task taskList[] = {
@@ -2848,59 +2190,6 @@ struct Task taskList[] = {
   { 1.0, 0, measurementTask },
   { 1.0/10, 0, loopTask },
   { 0, 0, NULL } };
-
-void backgroundTask(long durationMicros)
-{
-  long current = micros();
-  static int32_t endPtr = -1, searchPtr = 0;
-  static boolean endFound = false;
-  
-  if(logState == init_c) {
-    while(searchPtr < logSize) {
-      if(logRead(searchPtr) == uint16_tOKEN(t_stamp)) {
-        uint16_t stamp = logRead(logIndex(searchPtr+1));
-
-        if(stamp % 500 == 0) {
-          consoleNote("  Searching for log end at ");
-          consolePrint(searchPtr);
-          consolePrintLn("...");
-        }
-        
-        if(endFound && stamp != ENTRY_VALUE(logEndStamp+1))
-          break;
-            
-        endPtr = searchPtr;
-        endFound = true;
-        logEndStamp = stamp;
-
-        searchPtr++;
-      }
-      
-      searchPtr++;
-      
-      if(micros() - current > durationMicros)
-        // Stop for now
-        return;
-    }
-
-    logState = stop_c;
-      
-    if(endFound && endPtr < logSize) {
-      logPtr = endPtr;
-    
-      consoleNote("End of log found at ");
-      consolePrint(logPtr);
-      consolePrint(", stamp = ");
-      consolePrintLn(logEndStamp);
-    } else {
-      consoleNoteLn("*** The log is corrupt and is being cleared ***");
-      logEndStamp = 0;
-      logPtr = logSize-1;  
-      logClear();
-    }
-  } else
-    delayMicroseconds(durationMicros);
-}
 
 int scheduler(float currentTime)
 {
