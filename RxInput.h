@@ -15,6 +15,7 @@ struct RxInputRecord {
   
 boolean inputValid(struct RxInputRecord *record);
 float inputValue(struct RxInputRecord *record);
+float decodePWM(float pulse);
 
 #endif
 

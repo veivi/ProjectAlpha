@@ -19,7 +19,7 @@
 #include "Logging.h"
 #include "NVState.h"
 
-// #define MEGAMINI
+#define MEGAMINI
 
 NewI2C I2c = NewI2C();
 
@@ -50,7 +50,6 @@ int cycleTimePtr = 0, cycleTimesValid = 0;
 float cycleMin = -1.0, cycleMax = -1.0, cycleMean = -1.0, cycleCum = -1.0;
 const float tau = 0.1;
 float dynPressure, alpha, aileStick, elevStick, aileStickRaw, elevStickRaw;
-RunningAvgFilter aileFilter, elevFilter;
 float controlCycleEnded;
 int initCount = 5;
 boolean armed = false, talk = true;
@@ -140,6 +139,10 @@ struct RxInputRecord tuningKnobInput = { tuningKnobPin };
 struct RxInputRecord *rxInputs[8] =
   { &aileInput, &elevInput, NULL, &switchInput, NULL, &tuningKnobInput };
 
+#define rpmPin 		A14
+
+struct RxInputRecord rpmInput = { rpmPin };
+
 #include <Servo.h>
 
 #define aileServoPin		2
@@ -162,10 +165,6 @@ void servoOutput(void *handle, uint16_t value)
 }
 
 #endif
-
-#define rpmPin 		A14
-
-struct RxInputRecord rpmInput = { rpmPin };
 
 #define minAlpha paramRecord[stateRecord.model].alphaMin
 
@@ -288,11 +287,6 @@ boolean read4525DO_word14(uint16_t *result)
     *result = (((uint16_t) (buf[0] & 0x3F)) << 8) + buf[1];
 
   return success && (buf[0]>>6) == 0;
-}
-
-float decodePWM(float pulse) {
-  const float txRange = 0.81;
-  return (pulse - 1500)/500.0/txRange;
 }
 
 void logAlpha(void)
@@ -483,20 +477,19 @@ void setup() {
   PERMIT;
 
 #endif
-  
-  aileFilter.setWindowLen(1);
-  elevFilter.setWindowLen(1);
 
   // RPM sensor int control
   
-  // rpmMeasure(stateRecord.logRPM);
+  rpmMeasure(stateRecord.logRPM);
   
   // Servos
 
   consoleNoteLn("Initializing servos");
 
 #ifdef MEGAMINI
-  pwmOutputInitList(pwmOutput, sizeof(pwmOutput)/sizeof(struct PWMOutput));
+
+pwmOutputInitList(pwmOutput, sizeof(pwmOutput)/sizeof(struct PWMOutput));
+
 #else
 
   aileServo.attach(aileServoPin);
@@ -597,14 +590,10 @@ boolean readPressure(int16_t *result)
   
   if(iasFailed)
     // Stop trying
-    
     return false;
   
   if(!read4525DO_word14(&raw))
     return false;
-
-//  consoleNote("pressure = ");
-//  consolePrintLn(raw);
 
   if(result)
     *result = (raw - 8176)<<2;
@@ -1342,12 +1331,12 @@ float applyNullZone(float value)
 void receiverTask(float currentTime)
 {
   if(inputValid(&aileInput)) {
-    aileStickRaw = aileFilter.input(decodePWM(inputValue(&aileInput)));
+    aileStickRaw = decodePWM(inputValue(&aileInput));
     aileStick = applyNullZone(clamp(aileStickRaw - paramRecord[stateRecord.model].aileZero, -1, 1));
   }
   
   if(inputValid(&elevInput)) {
-    elevStickRaw = elevFilter.input(decodePWM(inputValue(&elevInput)));
+    elevStickRaw = decodePWM(inputValue(&elevInput));
     elevStick = clamp(elevStickRaw - paramRecord[stateRecord.model].elevZero, -1, 1);
 
     if(mode.autoStick) {
@@ -1387,6 +1376,7 @@ const int numPoles = 4;
 
 void rpmTask(float currentTime)
 {
+#if defined(rpmPin)
   static float prev;
 
   FORBID;
@@ -1402,6 +1392,7 @@ void rpmTask(float currentTime)
   
   if(prev > 0)
     rpmOutput = 2.0*60*count/numPoles/delta;
+#endif
 }
 
 void alphaLogTask(float currentTime)
