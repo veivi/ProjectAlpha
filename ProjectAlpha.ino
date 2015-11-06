@@ -14,8 +14,9 @@
 #include "NewI2C.h"
 #include "Storage.h"
 #include "Interrupt.h"
+#include "PPM.h"
 
-#define MEGAMINI
+// #define MEGAMINI
 
 NewI2C I2c = NewI2C();
 
@@ -79,15 +80,14 @@ struct GPSFix gpsFix;
 
 #ifdef MEGAMINI
 
-#include "PPM.h"
 #include "PWMOutput.h"
 
 #define ppmInputPin 48
 
-struct RxInputRecord aileInput, elevInput, switchInput, modeInput;
+struct RxInputRecord aileInput, elevInput, switchInput, tuningKnobInput;
 
 struct RxInputRecord *ppmInputs[] = 
-{ &aileInput, &elevInput, NULL, NULL, &switchInput, &modeInput };
+{ &aileInput, &elevInput, NULL, NULL, &switchInput, &tuningKnobInput };
 
 struct HWTimer hwTimer1 =
        { &TCCR1A, &TCCR1B, &ICR1, { &OCR1A, &OCR1B, &OCR1C } };
@@ -124,15 +124,13 @@ void servoOutput(void *handle, uint16_t value)
 #define switchPin 	A11
 #define tuningKnobPin 	A13
 
-struct RxInputRecord aileInput = { aileRxPin, 0 }; 
-struct RxInputRecord elevInput = { elevatorRxPin, 1 };
-struct RxInputRecord switchInput = { switchPin, 3 };
-struct RxInputRecord modeInput = { tuningKnobPin, 5 };
+struct RxInputRecord aileInput = { aileRxPin }; 
+struct RxInputRecord elevInput = { elevatorRxPin };
+struct RxInputRecord switchInput = { switchPin };
+struct RxInputRecord tuningKnobInput = { tuningKnobPin };
 
-struct RxInputRecord *rxInputs[] = 
-  { &aileInput, &elevInput, &switchInput, &modeInput, NULL };
-
-struct RxInputRecord *rxInputByBit[8];
+struct RxInputRecord *rxInputs[8] =
+  { &aileInput, &elevInput, NULL, &switchInput, NULL, &tuningKnobInput };
 
 #include <Servo.h>
 
@@ -1005,17 +1003,17 @@ ISR(PCINT2_vect)
     uint8_t i = log2Table[event];
     uint8_t mask = 1U<<i;
   
-    if(!rxInputByBit[i]) {
+    if(!rxInputs[i]) {
       pciWarn = true;
-    } else if(rxInputByBit[i]->freqOnly) {
-      rxInputByBit[i]->pulseCount += (state & mask) ? 1 : 0;
+    } else if(rxInputs[i]->freqOnly) {
+      rxInputs[i]->pulseCount += (state & mask) ? 1 : 0;
     } else if(state & mask) {
-      rxInputByBit[i]->pulseStart = current;
-    } else if(rxInputByBit[i]->pulseStart > 0) {
-      uint32_t width = current - rxInputByBit[i]->pulseStart;
-      rxInputByBit[i]->pulseWidthAcc += width;
-      rxInputByBit[i]->pulseCount++;      
-      rxInputByBit[i]->alive = true;
+      rxInputs[i]->pulseStart = current;
+    } else if(rxInputs[i]->pulseStart > 0) {
+      uint32_t width = current - rxInputs[i]->pulseStart;
+      rxInputs[i]->pulseWidthAcc += width;
+      rxInputs[i]->pulseCount++;      
+      rxInputs[i]->alive = true;
     }
     
     event &= ~mask;
@@ -1107,9 +1105,11 @@ void setup() {
 
   PCMSK2 = 0;
   
-  for(int i = 0; rxInputs[i]; i++) {
-    PCMSK2 |= 1<<rxInputs[i]->portBit;
-    rxInputByBit[rxInputs[i]->portBit] = rxInputs[i];
+  for(int i = 0; i < 8; i++) {
+    if(rxInputs[i]) {
+       rxInputs[i]->index = i;
+       PCMSK2 |= 1<<i;
+    }
   }
   
   PCICR |= 1<<PCIE2;
@@ -1190,9 +1190,9 @@ void rpmMeasure(boolean on)
 {
 #if defined(rpmPin)
   if(on)
-    PCMSK2 |= 1<<rpmInput.portBit;
+    PCMSK2 |= 1<<rpmInput.index;
   else
-    PCMSK2 &= ~(1<<rpmInput.portBit);
+    PCMSK2 &= ~(1<<rpmInput.index);
 #endif
 }
 
@@ -2013,8 +2013,8 @@ void receiverTask(float currentTime)
   if(inputValid(&switchInput))
     switchValue = inputValue(&switchInput);
     
-  if(inputValid(&modeInput))
-    tuningKnobValue = inputValue(&modeInput);
+  if(inputValid(&tuningKnobInput))
+    tuningKnobValue = inputValue(&tuningKnobInput);
 }
 
 void sensorTask(float currentTime)

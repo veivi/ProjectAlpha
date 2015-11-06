@@ -9,7 +9,7 @@ extern uint8_t ppmNumChannels;
 extern boolean ppmWarn;
 
 struct RxInputRecord {
-  uint8_t pin, portBit;
+  uint8_t pin, index;
   boolean freqOnly, alive;
   uint32_t pulseStart;
   uint32_t pulseCount;
