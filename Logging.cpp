@@ -59,6 +59,15 @@ int32_t logPtr, logLen, logSize;
 uint16_t logEndStamp;
 boolean logEnabled = false;
   
+static boolean logReady(void)
+{
+  if(logState == stop_c || logState == run_c)
+    return true;
+
+  consoleNoteLn("Log not ready");
+  return false;
+}
+
 static void logWrite(int32_t index, const uint16_t *value, int count)
 {
   if(logSize < 1)
@@ -73,20 +82,15 @@ static void logWrite(int32_t index, const uint16_t value)
   logWrite(index, &value, 1);
 }
 
-
-static boolean logReady(void)
-{
-  if(logState == stop_c || logState == run_c)
-    return true;
-
-  consoleNoteLn("Log not ready");
-  return false;
-}
-
 static uint16_t logRead(int32_t index)
 {
+  if(logSize < 1)
+    return 0xFFFF;
+    
   uint16_t entry = 0;
+  
   cacheRead(index*sizeof(entry), (uint8_t*) &entry, sizeof(entry));
+  
   return entry;
 }
 
@@ -123,7 +127,7 @@ void logClear(void)
   if(!logReady())
     return;
     
-  consoleNoteLn("Log CLEARED");
+  consoleNoteLn("Log being CLEARED");
     
   logEnter(ENTRY_TOKEN(t_start));
 
@@ -131,7 +135,7 @@ void logClear(void)
   storeNVState();
 }
   
-int prevCh = -1;
+static int prevCh = -1;
 
 static void logWithCh(int ch, uint16_t value)
 {
