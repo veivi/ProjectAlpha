@@ -2,7 +2,7 @@
 #include "Interrupt.h"
 
 #define AVR_RC_INPUT_MAX_CHANNELS 10
-#define AVR_RC_INPUT_MIN_CHANNELS 5
+#define AVR_RC_INPUT_MIN_CHANNELS 6
 
 /*
   mininum pulse width in microseconds to signal end of a PPM-SUM
@@ -17,13 +17,21 @@ static uint16_t _pulse_capt[AVR_RC_INPUT_MAX_CHANNELS];
 
 uint8_t ppmNumChannels;
 uint32_t ppmFrames;
-boolean ppmWarn;
+boolean ppmWarnShort, ppmWarnSlow;
 
 static struct RxInputRecord **inputRecords;
 static int numInputs;
 
 static void handlePPMInput(const uint16_t *pulse, int numCh)
 {
+  static uint32_t prev;
+  uint32_t current = micros(), cycle = current - prev;
+
+  if(prev > 0 && cycle > 30000)
+    ppmWarnSlow = true;
+
+  prev = current;
+  
   ppmNumChannels = numCh;
   ppmFrames++;
 
@@ -53,7 +61,7 @@ ISR(TIMER5_CAPT_vect) {
         // sync pulse
 	
         if( channel_ctr < AVR_RC_INPUT_MIN_CHANNELS )
-	   ppmWarn = true;
+	   ppmWarnShort = true;
 	else
            handlePPMInput(_pulse_capt, channel_ctr);
  

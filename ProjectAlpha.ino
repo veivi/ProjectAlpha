@@ -19,7 +19,7 @@
 #include "Logging.h"
 #include "NVState.h"
 
-#define MEGAMINI
+// #define MEGAMINI
 
 NewI2C I2c = NewI2C();
 
@@ -1150,8 +1150,10 @@ void executeCommand(const char *cmdBuf, int cmdBufLen)
       consolePrint(" SPURIOUS_PCINT");
     if(alphaWarn)
       consolePrint(" ALPHA_SENSOR");
-    if(ppmWarn)
-      consolePrint(" PPM_INPUT");
+    if(ppmWarnShort)
+      consolePrint(" PPM_SHORT");
+    if(ppmWarnSlow)
+      consolePrint(" PPM_SLOW");
     if(eepromWarn)
       consolePrint(" EEPROM");
     if(eepromFailed)
@@ -1172,7 +1174,8 @@ void executeCommand(const char *cmdBuf, int cmdBufLen)
 
   case c_reset:
     pciWarn = alphaWarn = alphaFailed = pusher.warn = elevController.warn
-      = alphaBuffer.warn = eepromWarn = eepromFailed = ppmWarn = false;
+      = alphaBuffer.warn = eepromWarn = eepromFailed = ppmWarnShort
+      = ppmWarnSlow = false;
     consoleNoteLn("Warning flags reset");
     break;
     

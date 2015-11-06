@@ -8,7 +8,7 @@
 
 extern uint8_t ppmNumChannels;
 extern uint32_t ppmFrames;
-extern boolean ppmWarn;
+extern boolean ppmWarnSlow, ppmWarnShort;
 
 void ppmInputInit(struct RxInputRecord *inputs[], int num);
   
