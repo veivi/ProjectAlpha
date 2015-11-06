@@ -207,17 +207,25 @@ void logDisable()
   consoleNoteLn("Logging DISABLED");
 }
 
-int col;
-  
+static int col = 0;
+static boolean first = false, tick = false;
+
+static void logPrintValue(void)
+{
+  col = 20;
+  first = true;
+  tick = false;
+}
+
 static void logPrintValue(float v)
 {
   float av = abs(v);
   
-  if(col > 72) {
-    consolePrintLn("");
-    col = 0;
+  if(!first) {
+    consolePrint(",");
+    col++;
   }
-  
+
   if(av < 0.001) {
     col++;
     consolePrint(0);
@@ -230,8 +238,19 @@ static void logPrintValue(float v)
     col += 3 + (v < 0.0 ? 1 : 0) + (decimals > 0 ? 1 : 0) + (av < 1.0 ? 1 : 0)
       + (av >= 1000.0 ? 1 : 0) + (av >= 10000.0 ? 1 : 0);
   }
+
+  if(col > 72) {
+    consolePrintLn("");
+    col = 0;
+  }
   
-  col++; // account for the comma
+  first = false;
+}
+
+static void logPrintValue(float small, float large)
+{
+  logPrintValue(tick ? small : large);
+  tick = !tick;
 }
 
 void logDump(int ch)
@@ -318,7 +337,7 @@ void logDump(int ch)
   boolean valueValid = false;
   float value = 0.0;
 
-  col = 20;
+  logPrintValue(); // Initialize
     
   for(int32_t i = 0; i < logLen; i++) {
     uint16_t entry = logRead(logIndex(-logLen+i));
@@ -338,14 +357,8 @@ void logDump(int ch)
         case t_mark:
           // Mark
                       
-          for(int j = 0; j < 5; j++) {
-            if(notFirst)
-              consolePrint(",");
-            logPrintValue(large); 
-            consolePrint(",");
-            logPrintValue(small);
-            notFirst++;
-          }
+          for(int j = 0; j < 10; j++)
+            logPrintValue(small, large); 
           break;
           
         default:
@@ -356,11 +369,8 @@ void logDump(int ch)
           } else {
             // Invalid token
       
-            if(notFirst)
-              consolePrint(",");
-            consolePrint("\n -360 // *** Invalid entry ");
+            consolePrint(" // *** Invalid entry ");
             consolePrintLn(entry);
-            notFirst++;
             break;
           }
       }
@@ -371,15 +381,10 @@ void logDump(int ch)
         currentCh = nextCh;
       
       if(logChannels[currentCh].tick) {
-        if(notFirst)
-          consolePrint(",");
-            
         if(valueValid)
           logPrintValue(value);
         else
-          logPrintValue((notFirst & 1) ? small : large);
-            
-        notFirst++;
+          logPrintValue(small, large);
       }
 
       if(currentCh == ch) {
