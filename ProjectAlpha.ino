@@ -20,76 +20,32 @@
 #include "NVState.h"
 #include "PWMOutput.h"
 
-#define BAUDRATE 115200
+//
+// HW config
+//
 
 #define MEGAMINI
 
-NewI2C I2c = NewI2C();
+//
+// Comm speed
+//
 
-uint8_t nestCount;
+#define BAUDRATE 115200
 
-struct ModeRecord {
-  boolean sensorFailSafe;
-  boolean rxFailSafe;
-  boolean autoStick;
-  boolean autoAlpha;
-  boolean autoTrim;
-  boolean stabilizer;
-  boolean wingLeveler;
-  boolean bankLimiter;
-};
+//
+// HW timer declarations
+//
 
-struct ModeRecord mode;
-
-struct GPSFix {
-  float altitude;
-  float track;
-  float lat;
-  float lon;
-  float speed;
-};
-
-struct GPSFix gpsFix;
-
-boolean testMode = false;
-float testGain = 0;
-boolean calibrate, switchState = false, switchStateLazy = false, echoEnabled = true;
-boolean iasFailed = false, iasWarn = false, alphaFailed = false, alphaWarn = false, pciWarn = false;
-boolean calibrateStart = false, calibrateStop = false;
-float controlCycle = 5.0;
-boolean rxElevatorAlive = true, rxAileronAlive = true, rpmAlive = 0;
-const int cycleTimeWindow = 31;
-float cycleTimeStore[cycleTimeWindow];
-int cycleTimePtr = 0;
-boolean cycleTimesValid;
-float cycleMin = -1.0, cycleMax = -1.0, cycleMean = -1.0, cycleCum = -1.0;
-const float tau = 0.1;
-float dynPressure, alpha, aileStick, elevStick, aileStickRaw, elevStickRaw;
-float controlCycleEnded;
-int initCount = 5;
-boolean armed = false, talk = true;
-float neutralStick = 0.0, neutralAlpha, targetAlpha;
-float switchValue, tuningKnobValue, rpmOutput;
-Controller elevController, aileController, pusher;
-float autoAlphaP, maxAlpha;
-float acc,altitude,  heading, rollAngle, pitchAngle, rollRate, pitchRate;
-int cycleTimeCounter = 0;
-Median3Filter cycleTimeFilter;
-boolean cycleTimesDone = false;
-float prevMeasurement;
-float parameter;  
-
-RunningAvgFilter alphaFilter;
-AlphaBuffer alphaBuffer, pressureBuffer;
-
-float elevOutput = 0, aileOutput = 0, flapOutput = 0, gearOutput = 1, brakeOutput = 0;
-  
 struct HWTimer hwTimer1 =
        { &TCCR1A, &TCCR1B, &ICR1, { &OCR1A, &OCR1B, &OCR1C } };
 struct HWTimer hwTimer3 =
        { &TCCR3A, &TCCR3B, &ICR3, { &OCR3A, &OCR3B, &OCR3C } };
 struct HWTimer hwTimer4 =
        { &TCCR4A, &TCCR4B, &ICR4, { &OCR4A, &OCR4B, &OCR4C } };
+
+//
+// RC input and PWM output configuration
+//
 
 #ifdef MEGAMINI
 
@@ -144,6 +100,63 @@ struct PWMOutput pwmOutput[] = {
 #define flapHandle     &pwmOutput[2]
 #define gearHandle     &pwmOutput[3]
 #define brakeHandle    &pwmOutput[4]
+
+struct ModeRecord {
+  boolean sensorFailSafe;
+  boolean rxFailSafe;
+  boolean autoStick;
+  boolean autoAlpha;
+  boolean autoTrim;
+  boolean stabilizer;
+  boolean wingLeveler;
+  boolean bankLimiter;
+};
+
+struct ModeRecord mode;
+
+struct GPSFix {
+  float altitude;
+  float track;
+  float lat;
+  float lon;
+  float speed;
+};
+
+struct GPSFix gpsFix;
+
+boolean testMode = false;
+float testGain = 0;
+boolean calibrate, switchState = false, switchStateLazy = false, echoEnabled = true;
+boolean iasFailed = false, iasWarn = false, alphaFailed = false, alphaWarn = false, pciWarn = false;
+boolean calibrateStart = false, calibrateStop = false;
+float controlCycle = 5.0;
+boolean rxElevatorAlive = true, rxAileronAlive = true, rpmAlive = 0;
+const int cycleTimeWindow = 31;
+float cycleTimeStore[cycleTimeWindow];
+int cycleTimePtr = 0;
+boolean cycleTimesValid;
+float cycleMin = -1.0, cycleMax = -1.0, cycleMean = -1.0, cycleCum = -1.0;
+const float tau = 0.1;
+float dynPressure, alpha, aileStick, elevStick, aileStickRaw, elevStickRaw;
+float controlCycleEnded;
+int initCount = 5;
+boolean armed = false, talk = true;
+float neutralStick = 0.0, neutralAlpha, targetAlpha;
+float switchValue, tuningKnobValue, rpmOutput;
+Controller elevController, aileController, pusher;
+float autoAlphaP, maxAlpha;
+float acc,altitude,  heading, rollAngle, pitchAngle, rollRate, pitchRate;
+int cycleTimeCounter = 0;
+Median3Filter cycleTimeFilter;
+boolean cycleTimesDone = false;
+float prevMeasurement;
+float parameter;  
+NewI2C I2c = NewI2C();
+uint8_t nestCount;
+RunningAvgFilter alphaFilter;
+AlphaBuffer alphaBuffer, pressureBuffer;
+
+float elevOutput = 0, aileOutput = 0, flapOutput = 0, gearOutput = 1, brakeOutput = 0;
 
 //
 // Misc inputs
