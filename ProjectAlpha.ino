@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <avr/interrupt.h>
 #include <avr/io.h>
-#include <EEPROM.h>
 #include "config.h"
 #include "def.h"
 #include "types.h"
@@ -27,7 +26,7 @@
 #define MEGAMINI
 
 //
-// Comm speed
+// Comms settings
 //
 
 #define BAUDRATE 115200
@@ -44,7 +43,7 @@ struct HWTimer hwTimer4 =
        { &TCCR4A, &TCCR4B, &ICR4, { &OCR4A, &OCR4B, &OCR4C } };
 
 //
-// RC input and PWM output configuration
+// RC input
 //
 
 #ifdef MEGAMINI
@@ -55,16 +54,6 @@ struct RxInputRecord aileInput, elevInput, switchInput, tuningKnobInput;
 
 struct RxInputRecord *ppmInputs[] = 
 { &aileInput, &elevInput, NULL, NULL, &switchInput, &tuningKnobInput };
-
-struct PWMOutput pwmOutput[] = {
-       { 12, &hwTimer1, COMnB },
-       { 11, &hwTimer1, COMnA },
-       { 8, &hwTimer4, COMnC },
-       { 7, &hwTimer4, COMnB },
-       { 6, &hwTimer4, COMnA },
-       { 3, &hwTimer3, COMnC },
-       { 2, &hwTimer3, COMnB },
-       { 5, &hwTimer3, COMnA } };
 
 #else
 
@@ -80,6 +69,26 @@ struct RxInputRecord tuningKnobInput = { tuningKnobPin };
 
 struct RxInputRecord *rxInputs[8] =
   { &aileInput, &elevInput, NULL, &switchInput, NULL, &tuningKnobInput };
+
+#endif
+
+//
+// Servo PWM output
+//
+
+#ifdef MEGAMINI
+
+struct PWMOutput pwmOutput[] = {
+       { 12, &hwTimer1, COMnB },
+       { 11, &hwTimer1, COMnA },
+       { 8, &hwTimer4, COMnC },
+       { 7, &hwTimer4, COMnB },
+       { 6, &hwTimer4, COMnA },
+       { 3, &hwTimer3, COMnC },
+       { 2, &hwTimer3, COMnB },
+       { 5, &hwTimer3, COMnA } };
+
+#else
 
 struct PWMOutput pwmOutput[] = {
        { 2, &hwTimer3, COMnB },
@@ -157,13 +166,6 @@ RunningAvgFilter alphaFilter;
 AlphaBuffer alphaBuffer, pressureBuffer;
 
 float elevOutput = 0, aileOutput = 0, flapOutput = 0, gearOutput = 1, brakeOutput = 0;
-
-//
-// Misc inputs
-//
-
-#define buttonPin 	35
-// #define rpmPin 		A14
 
 #ifdef rpmPin
 struct RxInputRecord rpmInput = { rpmPin };
@@ -361,7 +363,7 @@ ISR(BADISR_vect)
      abort();
 }
 
-#ifndef MEGAMINI
+#ifndef ppmInputPin
 
 uint8_t log2Table[1<<8];
 
@@ -434,15 +436,13 @@ void setup() {
   TWBR = max(paramRecord[stateRecord.model].clk_24L256,
               paramRecord[stateRecord.model].clk_5048B);
               
-  // Rx input
-
-#ifdef MEGAMINI
-  // PPM input
+  // RC input
   
+#ifdef ppmInputPin
+
   consoleNoteLn("Initializing PPM receiver");
   
-  pinMode(48, INPUT_PULLUP);
-  
+  pinMode(ppmInputPin, INPUT_PULLUP);  
   ppmInputInit(ppmInputs, sizeof(ppmInputs)/sizeof(struct RxInputRecord*));
   
 #else
