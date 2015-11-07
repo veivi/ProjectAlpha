@@ -18,6 +18,7 @@
 #include "PPM.h"
 #include "Logging.h"
 #include "NVState.h"
+#include "PWMOutput.h"
 
 #define BAUDRATE 115200
 
@@ -83,9 +84,14 @@ AlphaBuffer alphaBuffer, pressureBuffer;
 
 float elevOutput = 0, aileOutput = 0, flapOutput = 0, gearOutput = 1, brakeOutput = 0;
   
-#ifdef MEGAMINI
+struct HWTimer hwTimer1 =
+       { &TCCR1A, &TCCR1B, &ICR1, { &OCR1A, &OCR1B, &OCR1C } };
+struct HWTimer hwTimer3 =
+       { &TCCR3A, &TCCR3B, &ICR3, { &OCR3A, &OCR3B, &OCR3C } };
+struct HWTimer hwTimer4 =
+       { &TCCR4A, &TCCR4B, &ICR4, { &OCR4A, &OCR4B, &OCR4C } };
 
-#include "PWMOutput.h"
+#ifdef MEGAMINI
 
 #define ppmInputPin 48
 
@@ -93,13 +99,6 @@ struct RxInputRecord aileInput, elevInput, switchInput, tuningKnobInput;
 
 struct RxInputRecord *ppmInputs[] = 
 { &aileInput, &elevInput, NULL, NULL, &switchInput, &tuningKnobInput };
-
-struct HWTimer hwTimer1 =
-       { &TCCR1A, &TCCR1B, &ICR1, { &OCR1A, &OCR1B, &OCR1C } };
-struct HWTimer hwTimer3 =
-       { &TCCR3A, &TCCR3B, &ICR3, { &OCR3A, &OCR3B, &OCR3C } };
-struct HWTimer hwTimer4 =
-       { &TCCR4A, &TCCR4B, &ICR4, { &OCR4A, &OCR4B, &OCR4C } };
 
 struct PWMOutput pwmOutput[] = {
        { 12, &hwTimer1, COMnB },
@@ -111,25 +110,12 @@ struct PWMOutput pwmOutput[] = {
        { 2, &hwTimer3, COMnB },
        { 5, &hwTimer3, COMnA } };
 
-void *aileHandle = (void*) &pwmOutput[0];
-void *elevatorHandle = (void*) &pwmOutput[1];
-void *flapHandle = (void*) &pwmOutput[2];
-void *gearHandle = (void*) &pwmOutput[3];
-void *brakeHandle = (void*) &pwmOutput[4];
-
-void servoOutput(void *handle, uint16_t value)
-{
-  pwmOutputWrite((struct PWMOutput*) handle, value);
-}
-
 #else
 
 #define aileRxPin	A8
 #define elevatorRxPin 	A9
 #define switchPin 	A11
 #define tuningKnobPin 	A13
-
-#define buttonPin 	35
 
 struct RxInputRecord aileInput = { aileRxPin }; 
 struct RxInputRecord elevInput = { elevatorRxPin };
@@ -139,31 +125,35 @@ struct RxInputRecord tuningKnobInput = { tuningKnobPin };
 struct RxInputRecord *rxInputs[8] =
   { &aileInput, &elevInput, NULL, &switchInput, NULL, &tuningKnobInput };
 
-#define rpmPin 		A14
+struct PWMOutput pwmOutput[] = {
+       { 2, &hwTimer3, COMnB },
+       { 3, &hwTimer3, COMnC },
+       { 5, &hwTimer3, COMnA },
+       { 6, &hwTimer4, COMnA },
+       { 7, &hwTimer4, COMnB },
+       { 8, &hwTimer4, COMnC } };
 
+#endif
+
+//
+// Function to servo output mapping
+//
+
+#define aileHandle     &pwmOutput[0]
+#define elevatorHandle &pwmOutput[1]
+#define flapHandle     &pwmOutput[2]
+#define gearHandle     &pwmOutput[3]
+#define brakeHandle    &pwmOutput[4]
+
+//
+// Misc inputs
+//
+
+#define buttonPin 	35
+// #define rpmPin 		A14
+
+#ifdef rpmPin
 struct RxInputRecord rpmInput = { rpmPin };
-
-#include <Servo.h>
-
-#define aileServoPin		2
-#define elevatorServoPin  	3
-#define flapServoPin		5
-#define gearServoPin  		6
-#define brakeServoPin  		7
-
-Servo elevatorServo, aileServo, flapServo, gearServo, brakeServo;  
-
-void *elevatorHandle = (void*) &elevatorServo;
-void *aileHandle = (void*) &aileServo;
-void *flapHandle = (void*) &flapServo;
-void *gearHandle = (void*) &gearServo;
-void *brakeHandle = (void*) &brakeServo;
-
-void servoOutput(void *handle, uint16_t value)
-{
-  ((Servo*) handle)->writeMicroseconds(value);
-}
-
 #endif
 
 #define minAlpha paramRecord[stateRecord.model].alphaMin
@@ -449,8 +439,7 @@ void setup() {
   pinMode(aileRxPin, INPUT_PULLUP);
   pinMode(switchPin, INPUT_PULLUP);
   pinMode(tuningKnobPin, INPUT_PULLUP);
-  pinMode(rpmPin, INPUT_PULLUP);  
-
+  
   for(int i = 1; i < (1<<8); i++) {
     int j = 7;
     while(((1<<j) & i) == 0 && j > 0)
@@ -476,14 +465,19 @@ void setup() {
 #endif
 
   // RPM sensor int control
-  
+
+#ifdef rpmPin
+  pinMode(rpmPin, INPUT_PULLUP);  
   rpmMeasure(stateRecord.logRPM);
-  
+#dndif
+
+#endif
+
   // Servos
 
   consoleNoteLn("Initializing servos");
 
-#ifdef MEGAMINI
+#ifndef SOFT_PWM
 
   pwmOutputInitList(pwmOutput, sizeof(pwmOutput)/sizeof(struct PWMOutput));
 
@@ -2111,18 +2105,18 @@ void actuatorTask(float currentTime)
   // Actuators
  
   if(armed) {
-    servoOutput(aileHandle, 1500 + 500*clamp(paramRecord[stateRecord.model].aileDefl*aileOutput 
+    pwmOutputWrite(aileHandle, 1500 + 500*clamp(paramRecord[stateRecord.model].aileDefl*aileOutput 
       + paramRecord[stateRecord.model].aileNeutral, -1, 1));
 
-    servoOutput(elevatorHandle, 1500 + 500*clamp(paramRecord[stateRecord.model].elevDefl*elevOutput 
+    pwmOutputWrite(elevatorHandle, 1500 + 500*clamp(paramRecord[stateRecord.model].elevDefl*elevOutput 
       + paramRecord[stateRecord.model].elevNeutral, -1, 1));
                               
-    servoOutput(flapHandle, 1500 + 500*(clamp(paramRecord[stateRecord.model].flapNeutral 
+    pwmOutputWrite(flapHandle, 1500 + 500*(clamp(paramRecord[stateRecord.model].flapNeutral 
                         + flapOutput*paramRecord[stateRecord.model].flapStep, -1, 1)));                              
 
-    servoOutput(gearHandle, 1500 - 500*(gearOutput*2-1));
+    pwmOutputWrite(gearHandle, 1500 - 500*(gearOutput*2-1));
 
-    servoOutput(brakeHandle, 1500 + 500*clamp(paramRecord[stateRecord.model].brakeNeutral + 
+    pwmOutputWrite(brakeHandle, 1500 + 500*clamp(paramRecord[stateRecord.model].brakeNeutral + 
                                 paramRecord[stateRecord.model].brakeDefl*brakeOutput, -1, 1));                        
   }
 }
